@@ -86,7 +86,7 @@ var _ = BeforeSuite(func() {
 			filepath.Join(".", "testdata", "route.crd.yaml"),
 		},
 		ErrorIfCRDPathMissing: true,
-		BinaryAssetsDirectory: filepath.Join("..", "..", "..", "bin", "k8s", "1.24.2-linux-amd64"),
+		BinaryAssetsDirectory: filepath.Join("..", "..", "..", "bin", "k8s", "1.24.2-darwin-amd64"),
 	}
 
 	cfg, err := testEnv.Start()

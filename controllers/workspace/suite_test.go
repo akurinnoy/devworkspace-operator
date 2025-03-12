@@ -87,7 +87,7 @@ var _ = BeforeSuite(func() {
 	testEnv = &envtest.Environment{
 		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "deploy", "templates", "crd", "bases")},
 		ErrorIfCRDPathMissing: true,
-		BinaryAssetsDirectory: filepath.Join("..", "..", "bin", "k8s", "1.24.2-linux-amd64"),
+		BinaryAssetsDirectory: filepath.Join("..", "..", "bin", "k8s", "1.24.2-darwin-amd64"),
 	}
 
 	cfg, err := testEnv.Start()
