@@ -16,6 +16,8 @@
 package workspace
 
 import (
+	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -23,19 +25,95 @@ import (
 	"github.com/devfile/devworkspace-operator/pkg/dwerrors"
 	"github.com/devfile/devworkspace-operator/pkg/provision/sync"
 
+	dw "github.com/devfile/api/v2/pkg/apis/workspaces/v1alpha2"
 	"github.com/devfile/devworkspace-operator/apis/controller/v1alpha1"
 	maputils "github.com/devfile/devworkspace-operator/internal/map"
 	"github.com/devfile/devworkspace-operator/pkg/common"
 	"github.com/devfile/devworkspace-operator/pkg/constants"
 
+	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
+
+func checkRoutingConflicts(
+	ctx context.Context,
+	c client.Client,
+	workspace *common.DevWorkspaceWithConfig,
+	reqLogger logr.Logger) error {
+
+	// Collect all endpoint names from the current workspace into a set for efficient lookup.
+	workspaceEndpoints := map[string]bool{}
+	for _, component := range workspace.Spec.Template.Components {
+		if component.Container != nil {
+			for _, endpoint := range component.Container.Endpoints {
+				if endpoint.Exposure == "internal" || endpoint.Exposure == "public" {
+					endpointName := common.EndpointName(endpoint.Name)
+					workspaceEndpoints[endpointName] = true
+				}
+			}
+		}
+	}
+
+	// If there are no endpoints to check, we can exit early.
+	if len(workspaceEndpoints) == 0 {
+		return nil
+	}
+
+	// Check for conflicts with other DevWorkspaces in the same namespace.
+	devWorkspaceList := &dw.DevWorkspaceList{}
+	if err := c.List(ctx, devWorkspaceList, &client.ListOptions{Namespace: workspace.Namespace}); err != nil {
+		return err
+	}
+
+	for _, otherWorkspace := range devWorkspaceList.Items {
+		if otherWorkspace.UID == workspace.UID {
+			continue // Skip the current workspace
+		}
+		if otherWorkspace.Status.Phase == dw.DevWorkspaceStatusRunning || otherWorkspace.Status.Phase == dw.DevWorkspaceStatusStarting {
+			for _, component := range otherWorkspace.Spec.Template.Components {
+				if component.Container != nil {
+					for _, endpoint := range component.Container.Endpoints {
+						endpointName := common.EndpointName(endpoint.Name)
+						if _, ok := workspaceEndpoints[endpointName]; ok {
+							return &dwerrors.FailError{
+								Message: fmt.Sprintf("Endpoint name '%s' conflicts with an active workspace '%s' in the same namespace. Please choose a different endpoint name.", endpointName, otherWorkspace.Name),
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Check for conflicts with existing services in the namespace that are not owned by this workspace.
+	serviceList := &corev1.ServiceList{}
+	if err := c.List(ctx, serviceList, &client.ListOptions{Namespace: workspace.Namespace}); err != nil {
+		return err
+	}
+
+	for _, service := range serviceList.Items {
+		if _, ok := workspaceEndpoints[service.Name]; ok {
+			if ownerId, ok := service.Labels[constants.DevWorkspaceIDLabel]; !ok || ownerId != workspace.Status.DevWorkspaceId {
+				return fmt.Errorf("service '%s' already exists in this namespace and is not owned by this workspace, this may indicate an endpoint name conflict, please choose a different endpoint name", service.Name)
+			}
+		}
+	}
+
+	return nil
+}
 
 func SyncRoutingToCluster(
 	workspace *common.DevWorkspaceWithConfig,
 	clusterAPI sync.ClusterAPI) (*v1alpha1.PodAdditions, map[string]v1alpha1.ExposedEndpointList, string, error) {
+
+	// Call the new conflict check function
+	if err := checkRoutingConflicts(clusterAPI.Ctx, clusterAPI.Client, workspace, clusterAPI.Logger); err != nil {
+		return nil, nil, "", err
+	}
 
 	specRouting, err := getSpecRouting(workspace, clusterAPI.Scheme)
 	if err != nil {
