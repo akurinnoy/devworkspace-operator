@@ -696,6 +696,20 @@ make run              # Run controller locally
 4. Run `make fmt` and `make vet` for linting
 5. Commit with sign-off: `git commit -s -m "message"`
 
+### Git Commit Sign-off
+
+**MANDATORY**: Every `git commit` command MUST include the `-s` (`--signoff`) flag to add a DCO sign-off trailer:
+
+```
+Signed-off-by: Name <email>
+```
+
+- ✅ `git commit -s -m "..."`
+- ✅ `git commit -s --amend`
+- ❌ `git commit -m "..."` — missing sign-off, DO NOT do this
+
+This applies to every commit in every repository, including amends.
+
 ### Code Generation Triggers
 
 Run `make generate_all` when:
