@@ -493,6 +493,42 @@ var _ = Describe("DevWorkspaceRouting Controller", func() {
 				}
 				return updatedDWR.Status.Phase, nil
 			}, timeout, interval).Should(Equal(controllerv1alpha1.RoutingFailed), "DevWorkspaceRouting should be in failed phase")
+
+		})
+		It("Fails second DevWorkspaceRouting when discoverable endpoint conflicts with existing workspace", func() {
+			// DWR-A (testWorkspaceID) is already created and RoutingReady from BeforeEach.
+			// Create DWR-B with the same discoverable endpoint name — should enter RoutingFailed.
+			By("Creating second DevWorkspaceRouting with conflicting discoverable endpoint name")
+			dwrBName := "dwr-conflict-test"
+			createDWR("test-id-2", dwrBName)
+			defer deleteDevWorkspaceRouting(dwrBName)
+
+			By("Checking DWR-B reaches RoutingFailed with conflict message")
+			dwrBNN := namespacedName(dwrBName, testNamespace)
+			dwrB := &controllerv1alpha1.DevWorkspaceRouting{}
+			Eventually(func() (controllerv1alpha1.DevWorkspaceRoutingPhase, error) {
+				if err := k8sClient.Get(ctx, dwrBNN, dwrB); err != nil {
+					return "", err
+				}
+				return dwrB.Status.Phase, nil
+			}, timeout, interval).Should(Equal(controllerv1alpha1.RoutingFailed),
+				"DWR-B should fail due to discoverable endpoint conflict")
+
+			Expect(dwrB.Status.Message).Should(ContainSubstring(common.EndpointName(discoverableEndpointName)),
+				"Failure message should mention the conflicting endpoint name")
+			Expect(dwrB.Status.Message).Should(ContainSubstring("conflict"),
+				"Failure message should mention conflict")
+
+			By("Verifying DWR-A remains healthy")
+			dwrANN := namespacedName(devWorkspaceRoutingName, testNamespace)
+			dwrA := &controllerv1alpha1.DevWorkspaceRouting{}
+			Consistently(func() (controllerv1alpha1.DevWorkspaceRoutingPhase, error) {
+				if err := k8sClient.Get(ctx, dwrANN, dwrA); err != nil {
+					return "", err
+				}
+				return dwrA.Status.Phase, nil
+			}, timeout/2, interval).Should(Equal(controllerv1alpha1.RoutingReady),
+				"DWR-A should remain in RoutingReady and not be affected by the conflict")
 		})
 	})
 })

@@ -46,7 +46,7 @@ func GetDiscoverableServicesForEndpoints(endpoints map[string]controllerv1alpha1
 
 			if endpoint.Attributes.GetBoolean(string(controllerv1alpha1.DiscoverableAttribute), nil) {
 				// Create service with name matching endpoint
-				// TODO: This could cause a reconcile conflict if multiple workspaces define the same discoverable endpoint
+				// Conflict detection for identically-named discoverable endpoints is handled in syncServices() via checkDiscoverableServiceConflict.
 				// Also endpoint names may not be valid as service names
 				servicePort := corev1.ServicePort{
 					Name:       common.EndpointName(endpoint.Name),

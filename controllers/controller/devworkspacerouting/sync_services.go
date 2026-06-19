@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//      http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -22,11 +22,44 @@ import (
 	"github.com/devfile/devworkspace-operator/pkg/constants"
 	"github.com/devfile/devworkspace-operator/pkg/provision/sync"
 	corev1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	controllerv1alpha1 "github.com/devfile/devworkspace-operator/apis/controller/v1alpha1"
 )
+
+// checkDiscoverableServiceConflict checks whether any of the given spec services (those that are
+// discoverable) already exist in the cluster and are owned by a different DevWorkspace. If so, it
+// returns an UnrecoverableSyncError so the controller marks the routing as failed with a clear
+// user-visible message instead of looping forever.
+func checkDiscoverableServiceConflict(ctx context.Context, cl client.Client, routing *controllerv1alpha1.DevWorkspaceRouting, specServices []corev1.Service) error {
+	for _, service := range specServices {
+		if service.Annotations[constants.DevWorkspaceDiscoverableServiceAnnotation] != "true" {
+			continue
+		}
+		existingService := &corev1.Service{}
+		err := cl.Get(ctx, types.NamespacedName{Name: service.Name, Namespace: routing.Namespace}, existingService)
+		if err != nil {
+			if k8serrors.IsNotFound(err) {
+				continue
+			}
+			return err
+		}
+		// Same workspace owns this service -- idempotent re-reconcile, no conflict
+		if existingService.Labels[constants.DevWorkspaceIDLabel] == routing.Spec.DevWorkspaceId {
+			continue
+		}
+		// NOTE: In production this uses the caching client; a narrow window exists where a
+		// freshly-created service may not yet be in cache, causing a requeue before this
+		// check fires on the next reconcile. This is acceptable convergence behavior.
+return &sync.UnrecoverableSyncError{
+			Cause: fmt.Errorf("Discoverable endpoint %q conflicts with an endpoint already defined by another DevWorkspace in this namespace. Rename the endpoint to resolve the conflict.", service.Name),
+		}
+	}
+	return nil
+}
 
 func (r *DevWorkspaceRoutingReconciler) syncServices(routing *controllerv1alpha1.DevWorkspaceRouting, specServices []corev1.Service) (ok bool, clusterServices []corev1.Service, err error) {
 	servicesInSync := true
@@ -43,6 +76,10 @@ func (r *DevWorkspaceRoutingReconciler) syncServices(routing *controllerv1alpha1
 			return false, nil, err
 		}
 		servicesInSync = false
+	}
+
+	if err := checkDiscoverableServiceConflict(context.TODO(), r.Client, routing, specServices); err != nil {
+		return false, nil, err
 	}
 
 	clusterAPI := sync.ClusterAPI{
