@@ -16,6 +16,9 @@
 package solvers
 
 import (
+	"context"
+	"fmt"
+
 	controllerv1alpha1 "github.com/devfile/devworkspace-operator/apis/controller/v1alpha1"
 	"github.com/devfile/devworkspace-operator/pkg/common"
 	"github.com/devfile/devworkspace-operator/pkg/constants"
@@ -24,8 +27,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/pointer"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 type DevWorkspaceMetadata struct {
@@ -34,9 +39,62 @@ type DevWorkspaceMetadata struct {
 	PodSelector    map[string]string
 }
 
+// checkDiscoverableServiceConflicts lists all discoverable services in the namespace and returns a RoutingInvalid
+// error if any service belonging to a different workspace has the same name as one of the services being created.
+// If clnt is nil, the check is skipped (no client available).
+func checkDiscoverableServiceConflicts(ctx context.Context, clnt client.Client, namespace string, services []corev1.Service, workspaceID string) error {
+	if clnt == nil {
+		return nil
+	}
+
+	// List all services in the namespace that have the DevWorkspaceIDLabel (includes all devworkspace services).
+	existingServiceList := &corev1.ServiceList{}
+	labelSelector, err := labels.Parse(constants.DevWorkspaceIDLabel)
+	if err != nil {
+		return fmt.Errorf("failed to create label selector for discoverable services: %w", err)
+	}
+	if err := clnt.List(ctx, existingServiceList, &client.ListOptions{
+		Namespace:     namespace,
+		LabelSelector: labelSelector,
+	}); err != nil {
+		return fmt.Errorf("failed to list services in namespace %s: %w", namespace, err)
+	}
+
+	// Build a map of service names being requested so we can check conflicts quickly.
+	requestedNames := make(map[string]bool, len(services))
+	for _, svc := range services {
+		requestedNames[svc.Name] = true
+	}
+
+	for _, existing := range existingServiceList.Items {
+		// Only check discoverable services (identified by the annotation).
+		if existing.Annotations[constants.DevWorkspaceDiscoverableServiceAnnotation] != "true" {
+			continue
+		}
+		// Skip services that belong to the same workspace — re-reconciliation is not a conflict.
+		ownerID := existing.Labels[constants.DevWorkspaceIDLabel]
+		if ownerID == workspaceID {
+			continue
+		}
+		// If the existing discoverable service name matches one of the names being requested, it is a conflict.
+		if requestedNames[existing.Name] {
+			return &RoutingInvalid{
+				Reason: fmt.Sprintf(
+					"Discoverable endpoint '%s' conflicts with endpoint in workspace '%s'. Discoverable endpoint names must be unique within a namespace.",
+					existing.Name,
+					ownerID,
+				),
+			}
+		}
+	}
+	return nil
+}
+
 // GetDiscoverableServicesForEndpoints converts the endpoint list into a set of services, each corresponding to a single discoverable
 // endpoint from the list. Endpoints with the NoneEndpointExposure are ignored.
-func GetDiscoverableServicesForEndpoints(endpoints map[string]controllerv1alpha1.EndpointList, meta DevWorkspaceMetadata) []corev1.Service {
+// If ctx and clnt are provided (non-nil), a conflict check is performed against existing discoverable services in the namespace
+// before returning; a RoutingInvalid error is returned if a name collision with a different workspace is detected.
+func GetDiscoverableServicesForEndpoints(ctx context.Context, clnt client.Client, endpoints map[string]controllerv1alpha1.EndpointList, meta DevWorkspaceMetadata) ([]corev1.Service, error) {
 	var services []corev1.Service
 	for _, machineEndpoints := range endpoints {
 		for _, endpoint := range machineEndpoints {
@@ -45,9 +103,8 @@ func GetDiscoverableServicesForEndpoints(endpoints map[string]controllerv1alpha1
 			}
 
 			if endpoint.Attributes.GetBoolean(string(controllerv1alpha1.DiscoverableAttribute), nil) {
-				// Create service with name matching endpoint
-				// TODO: This could cause a reconcile conflict if multiple workspaces define the same discoverable endpoint
-				// Also endpoint names may not be valid as service names
+				// Create service with name matching endpoint.
+				// Endpoint names may not be valid as service names; common.EndpointName handles sanitisation.
 				servicePort := corev1.ServicePort{
 					Name:       common.EndpointName(endpoint.Name),
 					Protocol:   corev1.ProtocolTCP,
@@ -74,7 +131,13 @@ func GetDiscoverableServicesForEndpoints(endpoints map[string]controllerv1alpha1
 			}
 		}
 	}
-	return services
+
+	// Validate that none of the discoverable service names conflict with services owned by other workspaces.
+	if err := checkDiscoverableServiceConflicts(ctx, clnt, meta.Namespace, services, meta.DevWorkspaceId); err != nil {
+		return nil, err
+	}
+
+	return services, nil
 }
 
 // GetServiceForEndpoints returns a single service that exposes all endpoints of given exposure types, possibly also including the discoverable types.

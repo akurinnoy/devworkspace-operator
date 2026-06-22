@@ -16,12 +16,14 @@
 package solvers
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/devfile/devworkspace-operator/pkg/common"
 	"github.com/devfile/devworkspace-operator/pkg/constants"
 
 	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	controllerv1alpha1 "github.com/devfile/devworkspace-operator/apis/controller/v1alpha1"
 )
@@ -31,7 +33,11 @@ const (
 )
 
 type ClusterSolver struct {
-	TLS bool
+	// Client is an optional Kubernetes client used for conflict detection on discoverable endpoints.
+	// When non-nil, GetSpecObjects will check that no other workspace already owns a discoverable
+	// service with the same name before returning the routing objects.
+	Client client.Client
+	TLS    bool
 }
 
 var _ RoutingSolver = (*ClusterSolver)(nil)
@@ -47,6 +53,11 @@ func (s *ClusterSolver) Finalize(*controllerv1alpha1.DevWorkspaceRouting) error 
 func (s *ClusterSolver) GetSpecObjects(routing *controllerv1alpha1.DevWorkspaceRouting, workspaceMeta DevWorkspaceMetadata) (RoutingObjects, error) {
 	spec := routing.Spec
 	services := getServicesForEndpoints(spec.Endpoints, workspaceMeta)
+	discoverableServices, err := GetDiscoverableServicesForEndpoints(context.TODO(), s.Client, spec.Endpoints, workspaceMeta)
+	if err != nil {
+		return RoutingObjects{}, err
+	}
+	services = append(services, discoverableServices...)
 	podAdditions := &controllerv1alpha1.PodAdditions{}
 	if s.TLS {
 		readOnlyMode := int32(420)

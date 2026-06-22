@@ -100,18 +100,18 @@ func (_ *SolverGetter) HasSolver(routingClass controllerv1alpha1.DevWorkspaceRou
 	}
 }
 
-func (_ *SolverGetter) GetSolver(_ client.Client, routingClass controllerv1alpha1.DevWorkspaceRoutingClass) (RoutingSolver, error) {
+func (_ *SolverGetter) GetSolver(clnt client.Client, routingClass controllerv1alpha1.DevWorkspaceRoutingClass) (RoutingSolver, error) {
 	isOpenShift := infrastructure.IsOpenShift()
 	switch routingClass {
 	case controllerv1alpha1.DevWorkspaceRoutingBasic:
-		return &BasicSolver{}, nil
+		return &BasicSolver{Client: clnt}, nil
 	case controllerv1alpha1.DevWorkspaceRoutingCluster:
-		return &ClusterSolver{}, nil
+		return &ClusterSolver{Client: clnt}, nil
 	case controllerv1alpha1.DevWorkspaceRoutingClusterTLS, controllerv1alpha1.DevWorkspaceRoutingWebTerminal:
 		if !isOpenShift {
 			return nil, fmt.Errorf("routing class %s only supported on OpenShift", routingClass)
 		}
-		return &ClusterSolver{TLS: true}, nil
+		return &ClusterSolver{Client: clnt, TLS: true}, nil
 	default:
 		return nil, RoutingNotSupported
 	}

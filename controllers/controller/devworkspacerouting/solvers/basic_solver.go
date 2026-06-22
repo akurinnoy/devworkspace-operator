@@ -16,10 +16,13 @@
 package solvers
 
 import (
+	"context"
+
 	controllerv1alpha1 "github.com/devfile/devworkspace-operator/apis/controller/v1alpha1"
 	"github.com/devfile/devworkspace-operator/pkg/config"
 	"github.com/devfile/devworkspace-operator/pkg/constants"
 	"github.com/devfile/devworkspace-operator/pkg/infrastructure"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 var routeAnnotations = func(endpointName string, endpointAnnotations map[string]string) map[string]string {
@@ -47,7 +50,12 @@ var nginxIngressAnnotations = func(endpointName string, endpointAnnotations map[
 // According to the current cluster there is different behavior:
 // Kubernetes: use Ingresses without TLS
 // OpenShift: use Routes with TLS enabled
-type BasicSolver struct{}
+type BasicSolver struct {
+	// Client is an optional Kubernetes client used for conflict detection on discoverable endpoints.
+	// When non-nil, GetSpecObjects will check that no other workspace already owns a discoverable
+	// service with the same name before returning the routing objects.
+	Client client.Client
+}
 
 var _ RoutingSolver = (*BasicSolver)(nil)
 
@@ -70,7 +78,11 @@ func (s *BasicSolver) GetSpecObjects(routing *controllerv1alpha1.DevWorkspaceRou
 
 	spec := routing.Spec
 	services := getServicesForEndpoints(spec.Endpoints, workspaceMeta)
-	services = append(services, GetDiscoverableServicesForEndpoints(spec.Endpoints, workspaceMeta)...)
+	discoverableServices, err := GetDiscoverableServicesForEndpoints(context.TODO(), s.Client, spec.Endpoints, workspaceMeta)
+	if err != nil {
+		return routingObjects, err
+	}
+	services = append(services, discoverableServices...)
 	routingObjects.Services = services
 	if infrastructure.IsOpenShift() {
 		routingObjects.Routes = getRoutesForSpec(routingSuffix, spec.Endpoints, workspaceMeta)
