@@ -219,6 +219,183 @@ func TestCustomInitPersistentHome(t *testing.T) {
 	}
 }
 
+func TestCustomInitEnsureHomeInitContainerFields(t *testing.T) {
+	makeWorkspaceWithImage := func(image string) *common.DevWorkspaceWithConfig {
+		return &common.DevWorkspaceWithConfig{
+			DevWorkspace: &dw.DevWorkspace{
+				Spec: dw.DevWorkspaceSpec{
+					Template: dw.DevWorkspaceTemplateSpec{
+						DevWorkspaceTemplateSpecContent: dw.DevWorkspaceTemplateSpecContent{
+							Components: []dw.Component{
+								{
+									Name: "main-container",
+									ComponentUnion: dw.ComponentUnion{
+										Container: &dw.ContainerComponent{
+											Container: dw.Container{
+												Image: image,
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			Config: &v1alpha1.OperatorConfiguration{
+				Workspace: &v1alpha1.WorkspaceConfig{
+					PersistUserHome: &v1alpha1.PersistentHomeConfig{
+						Enabled: ptr.To(true),
+					},
+				},
+			},
+		}
+	}
+
+	tests := []struct {
+		name          string
+		container     *corev1.Container
+		workspace     *common.DevWorkspaceWithConfig
+		wantErr       bool
+		wantErrSubstr string
+		wantCommand   []string
+		wantMountPath string
+		wantMountName string
+		wantImage     string
+	}{
+		{
+			name: "nil command is set to [/bin/sh, -c]",
+			container: &corev1.Container{
+				Name:    "init-persistent-home",
+				Command: nil,
+				Image:   "workspace:latest",
+			},
+			workspace:     makeWorkspaceWithImage("workspace-inferred:latest"),
+			wantErr:       false,
+			wantCommand:   []string{"/bin/sh", "-c"},
+			wantMountPath: constants.HomeUserDirectory,
+			wantMountName: constants.HomeVolumeName,
+			wantImage:     "workspace:latest",
+		},
+		{
+			name: "empty command is set to [/bin/sh, -c]",
+			container: &corev1.Container{
+				Name:    "init-persistent-home",
+				Command: []string{},
+				Image:   "workspace:latest",
+			},
+			workspace:     makeWorkspaceWithImage("workspace-inferred:latest"),
+			wantErr:       false,
+			wantCommand:   []string{"/bin/sh", "-c"},
+			wantMountPath: constants.HomeUserDirectory,
+			wantMountName: constants.HomeVolumeName,
+			wantImage:     "workspace:latest",
+		},
+		{
+			name: "correct command [/bin/sh, -c] is accepted without error",
+			container: &corev1.Container{
+				Name:    "init-persistent-home",
+				Command: []string{"/bin/sh", "-c"},
+				Image:   "workspace:latest",
+			},
+			workspace:     makeWorkspaceWithImage("workspace-inferred:latest"),
+			wantErr:       false,
+			wantCommand:   []string{"/bin/sh", "-c"},
+			wantMountPath: constants.HomeUserDirectory,
+			wantMountName: constants.HomeVolumeName,
+			wantImage:     "workspace:latest",
+		},
+		{
+			name: "wrong command [bash] returns error",
+			container: &corev1.Container{
+				Name:    "init-persistent-home",
+				Command: []string{"bash"},
+				Image:   "workspace:latest",
+			},
+			workspace:     makeWorkspaceWithImage("workspace-inferred:latest"),
+			wantErr:       true,
+			wantErrSubstr: "command must be exactly [/bin/sh, -c]",
+		},
+		{
+			name: "wrong command [/bin/sh] (missing -c) returns error",
+			container: &corev1.Container{
+				Name:    "init-persistent-home",
+				Command: []string{"/bin/sh"},
+				Image:   "workspace:latest",
+			},
+			workspace:     makeWorkspaceWithImage("workspace-inferred:latest"),
+			wantErr:       true,
+			wantErrSubstr: "command must be exactly [/bin/sh, -c]",
+		},
+		{
+			name: "volumeMounts are always overridden with persistent-home at /home/user",
+			container: &corev1.Container{
+				Name:  "init-persistent-home",
+				Image: "workspace:latest",
+				VolumeMounts: []corev1.VolumeMount{
+					{Name: "some-other-volume", MountPath: "/data"},
+					{Name: "another-volume", MountPath: "/tmp/other"},
+				},
+			},
+			workspace:     makeWorkspaceWithImage("workspace-inferred:latest"),
+			wantErr:       false,
+			wantCommand:   []string{"/bin/sh", "-c"},
+			wantMountPath: constants.HomeUserDirectory,
+			wantMountName: constants.HomeVolumeName,
+			wantImage:     "workspace:latest",
+		},
+		{
+			name: "empty image is inferred from workspace",
+			container: &corev1.Container{
+				Name:  "init-persistent-home",
+				Image: "",
+			},
+			workspace:     makeWorkspaceWithImage("workspace-inferred:latest"),
+			wantErr:       false,
+			wantCommand:   []string{"/bin/sh", "-c"},
+			wantMountPath: constants.HomeUserDirectory,
+			wantMountName: constants.HomeVolumeName,
+			wantImage:     "workspace-inferred:latest",
+		},
+		{
+			name: "non-empty image is preserved and not overridden",
+			container: &corev1.Container{
+				Name:  "init-persistent-home",
+				Image: "custom:tag",
+			},
+			workspace:     makeWorkspaceWithImage("workspace-inferred:latest"),
+			wantErr:       false,
+			wantCommand:   []string{"/bin/sh", "-c"},
+			wantMountPath: constants.HomeUserDirectory,
+			wantMountName: constants.HomeVolumeName,
+			wantImage:     "custom:tag",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := EnsureHomeInitContainerFields(tt.container, tt.workspace)
+
+			if tt.wantErr {
+				assert.Error(t, err)
+				if tt.wantErrSubstr != "" {
+					assert.Contains(t, err.Error(), tt.wantErrSubstr)
+				}
+				return
+			}
+
+			assert.NoError(t, err)
+			assert.Equal(t, tt.wantCommand, tt.container.Command, "Command should match expected value")
+			assert.Equal(t, tt.wantImage, tt.container.Image, "Image should match expected value")
+			assert.Len(t, tt.container.VolumeMounts, 1, "VolumeMounts should be overridden to exactly one entry")
+			if len(tt.container.VolumeMounts) == 1 {
+				assert.Equal(t, tt.wantMountName, tt.container.VolumeMounts[0].Name, "VolumeMount name should be persistent-home")
+				assert.Equal(t, tt.wantMountPath, tt.container.VolumeMounts[0].MountPath, "VolumeMount path should be /home/user/")
+			}
+		})
+	}
+}
+
 func TestInferWorkspaceImage(t *testing.T) {
 	tests := []struct {
 		name          string
