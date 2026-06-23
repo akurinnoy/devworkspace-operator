@@ -62,11 +62,26 @@ func AddPersistentHomeVolume(workspace *common.DevWorkspaceWithConfig) (*v1alpha
 		Path: constants.HomeUserDirectory,
 	}
 
-	// Add default init container only if not disabled and no custom init is configured
-	if workspace.Config.Workspace.PersistUserHome.DisableInitContainer == nil || !*workspace.Config.Workspace.PersistUserHome.DisableInitContainer {
-		err := addInitContainer(dwTemplateSpecCopy)
-		if err != nil {
-			return nil, fmt.Errorf("failed to add init container for home persistence setup: %w", err)
+	// DisableInitContainer: true suppresses init container creation entirely,
+	// even if a custom init-persistent-home is configured in DWOC.
+	disableInitContainer := workspace.Config.Workspace.PersistUserHome.DisableInitContainer != nil &&
+		*workspace.Config.Workspace.PersistUserHome.DisableInitContainer
+
+	if !disableInitContainer {
+		// Check whether a custom init-persistent-home is configured in DWOC
+		customContainer := findCustomInitContainer(workspace)
+		if customContainer != nil {
+			// Use custom container with its Args instead of the default stow script
+			err := addCustomInitContainer(dwTemplateSpecCopy, customContainer)
+			if err != nil {
+				return nil, fmt.Errorf("failed to add custom init container for home persistence setup: %w", err)
+			}
+		} else {
+			// No custom container: use default stow-based init script (backward compatibility)
+			err := addInitContainer(dwTemplateSpecCopy)
+			if err != nil {
+				return nil, fmt.Errorf("failed to add init container for home persistence setup: %w", err)
+			}
 		}
 	}
 
@@ -140,6 +155,69 @@ func hasInitPersistentHomeInConfig(workspace *common.DevWorkspaceWithConfig) boo
 	}
 
 	return false
+}
+
+// findCustomInitContainer searches workspace.Config.Workspace.InitContainers for
+// a container named HomeInitComponentName and returns a pointer to it if found.
+func findCustomInitContainer(workspace *common.DevWorkspaceWithConfig) *corev1.Container {
+	if workspace.Config == nil || workspace.Config.Workspace == nil {
+		return nil
+	}
+	for i := range workspace.Config.Workspace.InitContainers {
+		if workspace.Config.Workspace.InitContainers[i].Name == constants.HomeInitComponentName {
+			return &workspace.Config.Workspace.InitContainers[i]
+		}
+	}
+	return nil
+}
+
+// addCustomInitContainer adds an init-persistent-home devfile component whose Args
+// come from the DWOC-provided custom corev1.Container instead of the default stow script.
+func addCustomInitContainer(dwTemplateSpec *v1alpha2.DevWorkspaceTemplateSpec, custom *corev1.Container) error {
+	if initComponentExists(dwTemplateSpec) {
+		return fmt.Errorf("component named %s already exists in the devworkspace", constants.HomeInitComponentName)
+	}
+	if initCommandExists(dwTemplateSpec) {
+		return fmt.Errorf("command with id %s already exists in the devworkspace", constants.HomeInitEventId)
+	}
+	if initEventExists(dwTemplateSpec) {
+		return fmt.Errorf("event with id %s already exists in the devworkspace", constants.HomeInitEventId)
+	}
+
+	initContainer := &v1alpha2.Container{
+		Image:   custom.Image,
+		Command: custom.Command,
+		Args:    custom.Args,
+	}
+	// Fallback: if no image is set in the custom container, infer from workspace components
+	if initContainer.Image == "" {
+		initContainer.Image = InferWorkspaceImage(dwTemplateSpec)
+	}
+	// Fallback: if no command set in the custom container, use default shell invocation
+	if len(initContainer.Command) == 0 {
+		initContainer.Command = []string{"/bin/sh", "-c"}
+	}
+
+	addInitContainerComponent(dwTemplateSpec, initContainer)
+
+	if dwTemplateSpec.Commands == nil {
+		dwTemplateSpec.Commands = []v1alpha2.Command{}
+	}
+	if dwTemplateSpec.Events == nil {
+		dwTemplateSpec.Events = &v1alpha2.Events{}
+	}
+
+	dwTemplateSpec.Commands = append(dwTemplateSpec.Commands, v1alpha2.Command{
+		Id: constants.HomeInitEventId,
+		CommandUnion: v1alpha2.CommandUnion{
+			Apply: &v1alpha2.ApplyCommand{
+				Component: constants.HomeInitComponentName,
+			},
+		},
+	})
+	dwTemplateSpec.Events.PreStart = append(dwTemplateSpec.Events.PreStart, constants.HomeInitEventId)
+
+	return nil
 }
 
 func addInitContainer(dwTemplateSpec *v1alpha2.DevWorkspaceTemplateSpec) error {
@@ -247,16 +325,24 @@ func inferInitContainer(dwTemplateSpec *v1alpha2.DevWorkspaceTemplateSpec) *v1al
 	return nil
 }
 
-// EnsureHomeInitContainerFields ensures that an init-persistent-home container has
-// the correct Command and VolumeMounts.
-func EnsureHomeInitContainerFields(c *corev1.Container) error {
-	// Set default command only if not provided
-	if len(c.Command) == 0 {
-		c.Command = []string{"/bin/sh", "-c"}
+// EnsureHomeInitContainerFields enforces the correct image and VolumeMount on an
+// init-persistent-home container regardless of what custom config provides.
+// If container.Image is empty, it is set to image.
+// The VolumeMount for homeVolumeName -> /home/user/ is always set.
+func EnsureHomeInitContainerFields(container *corev1.Container, image, homeVolumeName string) {
+	if container.Image == "" {
+		container.Image = image
 	}
-	c.VolumeMounts = []corev1.VolumeMount{{
-		Name:      constants.HomeVolumeName,
-		MountPath: constants.HomeUserDirectory,
-	}}
-	return nil
+	// Ensure the persistent-home volume mount is always present and correct
+	mountPath := constants.HomeUserDirectory
+	for i, vm := range container.VolumeMounts {
+		if vm.Name == homeVolumeName {
+			container.VolumeMounts[i].MountPath = mountPath
+			return
+		}
+	}
+	container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+		Name:      homeVolumeName,
+		MountPath: mountPath,
+	})
 }
