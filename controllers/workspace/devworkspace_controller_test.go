@@ -1555,6 +1555,100 @@ var _ = Describe("DevWorkspace Controller", func() {
 
 	})
 
+	Context("DWOC init container injection (CRW-9373)", func() {
+		const testURL = "test-url"
+
+		BeforeEach(func() {
+			workspacecontroller.SetupHttpClientsForTesting(&http.Client{
+				Transport: &testutil.TestRoundTripper{
+					Data: map[string]testutil.TestResponse{
+						fmt.Sprintf("%s/healthz", testURL): {
+							StatusCode: http.StatusOK,
+						},
+					},
+				},
+			})
+		})
+
+		AfterEach(func() {
+			deleteDevWorkspace(devWorkspaceName)
+			workspacecontroller.SetupHttpClientsForTesting(getBasicTestHttpClient())
+			config.SetGlobalConfigForTesting(nil)
+		})
+
+		It("Injects custom init container from DWOC into workspace deployment", func() {
+			By("Configuring DWOC with a custom init container")
+			config.SetGlobalConfigForTesting(&controllerv1alpha1.OperatorConfiguration{
+				Workspace: &controllerv1alpha1.WorkspaceConfig{
+					InitContainers: []corev1.Container{
+						{
+							Name:    "custom-init",
+							Image:   "busybox:latest",
+							Command: []string{"sh", "-c", "echo hello"},
+						},
+					},
+				},
+			})
+
+			By("Creating DevWorkspace")
+			createDevWorkspace(devWorkspaceName, "test-devworkspace.yaml")
+			devworkspace := getExistingDevWorkspace(devWorkspaceName)
+			workspaceID := devworkspace.Status.DevWorkspaceId
+
+			By("Manually making Routing ready to continue")
+			markRoutingReady(testURL, common.DevWorkspaceRoutingName(workspaceID))
+
+			By("Waiting for workspace deployment to be created")
+			deploy := &appsv1.Deployment{}
+			deployNN := namespacedName(common.DeploymentName(workspaceID), testNamespace)
+			Eventually(func() error {
+				return k8sClient.Get(ctx, deployNN, deploy)
+			}, timeout, interval).Should(Succeed(), "Workspace deployment should be created")
+
+			By("Checking that custom init container is present in the deployment")
+			initContainerNames := make([]string, len(deploy.Spec.Template.Spec.InitContainers))
+			for i, ic := range deploy.Spec.Template.Spec.InitContainers {
+				initContainerNames[i] = ic.Name
+			}
+			Expect(initContainerNames).Should(ContainElement("custom-init"),
+				"Deployment should include the custom init container from DWOC config")
+		})
+
+		It("Fails the workspace when init-persistent-home has an invalid command", func() {
+			By("Configuring DWOC with invalid init-persistent-home container (wrong command)")
+			persistHomeEnabled := true
+			config.SetGlobalConfigForTesting(&controllerv1alpha1.OperatorConfiguration{
+				Workspace: &controllerv1alpha1.WorkspaceConfig{
+					PersistUserHome: &controllerv1alpha1.PersistentHomeConfig{
+						Enabled: &persistHomeEnabled,
+					},
+					InitContainers: []corev1.Container{
+						{
+							Name:    "init-persistent-home",
+							Image:   "busybox:latest",
+							Command: []string{"bash"},
+						},
+					},
+				},
+			})
+
+			By("Creating DevWorkspace")
+			createDevWorkspace(devWorkspaceName, "test-devworkspace.yaml")
+			devworkspace := getExistingDevWorkspace(devWorkspaceName)
+
+			By("Waiting for workspace to enter Failed phase due to invalid init container command")
+			currDW := &dw.DevWorkspace{}
+			Eventually(func() (dw.DevWorkspacePhase, error) {
+				if err := k8sClient.Get(ctx, namespacedName(devworkspace.Name, testNamespace), currDW); err != nil {
+					return "", err
+				}
+				GinkgoWriter.Printf("Waiting for DevWorkspace to fail -- Phase: %s, Message: %s\n", currDW.Status.Phase, currDW.Status.Message)
+				return currDW.Status.Phase, nil
+			}, timeout, interval).Should(Equal(dw.DevWorkspaceStatusFailed),
+				"DevWorkspace should enter Failed phase when init-persistent-home has invalid command")
+		})
+	})
+
 	Context("Edge cases", func() {
 
 		It("Allows Kubernetes and Container components to share same target port on endpoint", func() {
