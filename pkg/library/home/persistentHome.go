@@ -248,15 +248,26 @@ func inferInitContainer(dwTemplateSpec *v1alpha2.DevWorkspaceTemplateSpec) *v1al
 }
 
 // EnsureHomeInitContainerFields ensures that an init-persistent-home container has
-// the correct Command and VolumeMounts.
-func EnsureHomeInitContainerFields(c *corev1.Container) error {
-	// Set default command only if not provided
-	if len(c.Command) == 0 {
-		c.Command = []string{"/bin/sh", "-c"}
+// the correct Command, VolumeMounts, and Image fields.
+// If container.Command is nil or empty, it is set to ["/bin/sh", "-c"].
+// If container.Command is set to anything other than exactly ["/bin/sh", "-c"], an error is returned.
+// container.VolumeMounts is always overridden to mount the persistent-home volume at /home/user.
+// If container.Image is empty, InferWorkspaceImage is called with the workspace template to set it.
+func EnsureHomeInitContainerFields(container *corev1.Container, workspace *common.DevWorkspaceWithConfig) error {
+	if len(container.Command) == 0 {
+		container.Command = []string{"/bin/sh", "-c"}
+	} else if len(container.Command) != 2 || container.Command[0] != "/bin/sh" || container.Command[1] != "-c" {
+		return fmt.Errorf("command must be exactly [/bin/sh, -c]")
 	}
-	c.VolumeMounts = []corev1.VolumeMount{{
+
+	container.VolumeMounts = []corev1.VolumeMount{{
 		Name:      constants.HomeVolumeName,
 		MountPath: constants.HomeUserDirectory,
 	}}
+
+	if container.Image == "" {
+		container.Image = InferWorkspaceImage(&workspace.Spec.Template)
+	}
+
 	return nil
 }
