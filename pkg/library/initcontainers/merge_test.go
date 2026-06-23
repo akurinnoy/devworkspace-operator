@@ -30,6 +30,30 @@ func TestMergeInitContainers(t *testing.T) {
 		want    []corev1.Container
 	}{
 		{
+			name:    "empty base and empty patches",
+			base:    []corev1.Container{},
+			patches: []corev1.Container{},
+			want:    []corev1.Container{},
+		},
+		{
+			name:    "nil base and nil patches",
+			base:    nil,
+			patches: nil,
+			want:    nil,
+		},
+		{
+			name:    "nil base with patch containers",
+			base:    nil,
+			patches: []corev1.Container{{Name: "new-container", Image: "new-image"}},
+			want:    []corev1.Container{{Name: "new-container", Image: "new-image"}},
+		},
+		{
+			name:    "base containers with nil patches",
+			base:    []corev1.Container{{Name: "base-container", Image: "base-image"}},
+			patches: nil,
+			want:    []corev1.Container{{Name: "base-container", Image: "base-image"}},
+		},
+		{
 			name: "empty base",
 			base: []corev1.Container{},
 			patches: []corev1.Container{
@@ -47,6 +71,67 @@ func TestMergeInitContainers(t *testing.T) {
 			patches: []corev1.Container{},
 			want: []corev1.Container{
 				{Name: "base-container", Image: "base-image"},
+			},
+		},
+		{
+			name: "multiple new patch containers appended in patch order",
+			base: []corev1.Container{
+				{Name: "base-a", Image: "image-a"},
+			},
+			patches: []corev1.Container{
+				{Name: "new-first", Image: "image-first"},
+				{Name: "new-second", Image: "image-second"},
+				{Name: "new-third", Image: "image-third"},
+			},
+			want: []corev1.Container{
+				{Name: "base-a", Image: "image-a"},
+				{Name: "new-first", Image: "image-first"},
+				{Name: "new-second", Image: "image-second"},
+				{Name: "new-third", Image: "image-third"},
+			},
+		},
+		{
+			name: "same-name merge patch fields overwrite base fields",
+			base: []corev1.Container{
+				{
+					Name:    "shared-container",
+					Image:   "base-image:v1",
+					Command: []string{"/bin/sh"},
+					Args:    []string{"base-arg"},
+				},
+			},
+			patches: []corev1.Container{
+				{
+					Name:  "shared-container",
+					Image: "patched-image:v2",
+					Args:  []string{"patched-arg"},
+				},
+			},
+			want: []corev1.Container{
+				{
+					Name:    "shared-container",
+					Image:   "patched-image:v2",
+					Command: []string{"/bin/sh"},
+					Args:    []string{"patched-arg"},
+				},
+			},
+		},
+		{
+			name: "base order preserved with interleaved patches",
+			base: []corev1.Container{
+				{Name: "alpha", Image: "image-alpha"},
+				{Name: "beta", Image: "image-beta"},
+				{Name: "gamma", Image: "image-gamma"},
+			},
+			patches: []corev1.Container{
+				{Name: "beta", Image: "image-beta-patched"},
+				{Name: "new-delta", Image: "image-delta"},
+			},
+			want: []corev1.Container{
+				{Name: "alpha", Image: "image-alpha"},
+				{Name: "beta", Image: "image-beta-patched"},
+				{Name: "gamma", Image: "image-gamma"},
+				{Name: "new-delta", Image: "image-delta"},
 			},
 		},
 		{
