@@ -16,90 +16,144 @@
 package initcontainers
 
 import (
-	"fmt"
-
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/util/json"
-	"k8s.io/apimachinery/pkg/util/strategicpatch"
 )
 
-// MergeInitContainers performs a strategic merge of init containers.
-// Containers with the same name in the patch will be merged into the base,
-// and new containers will be appended. The merge uses Kubernetes' strategic
-// merge patch semantics with name as the merge key.
-func MergeInitContainers(base []corev1.Container, patches []corev1.Container) ([]corev1.Container, error) {
+// MergeInitContainers performs a strategic merge of init containers using 'name'
+// as the merge key. Containers sharing the same name in base and patches are merged
+// (non-zero patch fields overwrite base fields). New containers in patches that are
+// not present in base are appended in patch order. Base container order is preserved.
+func MergeInitContainers(base, patches []corev1.Container) ([]corev1.Container, error) {
 	if len(patches) == 0 {
 		return base, nil
 	}
 
-	// create PodSpec structure with base init containers
-	basePodSpec := corev1.PodSpec{
-		InitContainers: base,
+	// Build a lookup map for patch containers by name
+	patchByName := make(map[string]corev1.Container, len(patches))
+	for _, p := range patches {
+		patchByName[p.Name] = p
 	}
 
-	// create PodSpec structure with patch init containers
-	patchPodSpec := corev1.PodSpec{
-		InitContainers: patches,
-	}
+	result := make([]corev1.Container, 0, len(base)+len(patches))
+	baseNames := make(map[string]bool, len(base))
 
-	// marshal both structures to JSON
-	baseBytes, err := json.Marshal(basePodSpec)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal base init containers: %w", err)
-	}
-	patchBytes, err := json.Marshal(patchPodSpec)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal patch init containers: %w", err)
-	}
-
-	// perform strategic merge patch
-	mergedBytes, err := strategicpatch.StrategicMergePatch(
-		baseBytes,
-		patchBytes,
-		&corev1.PodSpec{},
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to apply strategic merge patch: %w", err)
-	}
-
-	// unmarshal the merged result
-	var mergedPodSpec corev1.PodSpec
-	if err := json.Unmarshal(mergedBytes, &mergedPodSpec); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal merged init containers: %w", err)
-	}
-
-	/* restore the original containers order */
-
-	// build map for quick lookup
-	mergedMap := make(map[string]corev1.Container)
-	for _, container := range mergedPodSpec.InitContainers {
-		mergedMap[container.Name] = container
-	}
-
-	result := make([]corev1.Container, 0, len(mergedPodSpec.InitContainers))
-	baseNames := make(map[string]bool)
-
-	// add base containers in order, merged one if patched
-	for _, baseContainer := range base {
-		baseNames[baseContainer.Name] = true
-		if merged, exists := mergedMap[baseContainer.Name]; exists {
-			result = append(result, merged)
-			delete(mergedMap, baseContainer.Name)
+	// Iterate base containers in order; merge where a patch exists
+	for _, b := range base {
+		baseNames[b.Name] = true
+		if patch, ok := patchByName[b.Name]; ok {
+			result = append(result, mergeContainer(b, patch))
 		} else {
-			result = append(result, baseContainer)
+			result = append(result, b)
 		}
 	}
 
-	// append new containers from patches
-	for _, patchContainer := range patches {
-		if !baseNames[patchContainer.Name] {
-			if merged, exists := mergedMap[patchContainer.Name]; exists {
-				result = append(result, merged)
-			} else {
-				result = append(result, patchContainer)
-			}
+	// Append new patch containers (not present in base) in patch order
+	for _, p := range patches {
+		if !baseNames[p.Name] {
+			result = append(result, p)
 		}
 	}
 
 	return result, nil
+}
+
+// mergeContainer merges a patch container into a base container.
+// Non-zero/non-nil patch fields overwrite the corresponding base fields.
+func mergeContainer(base, patch corev1.Container) corev1.Container {
+	merged := base
+
+	if patch.Image != "" {
+		merged.Image = patch.Image
+	}
+	if patch.ImagePullPolicy != "" {
+		merged.ImagePullPolicy = patch.ImagePullPolicy
+	}
+	if len(patch.Command) > 0 {
+		merged.Command = patch.Command
+	}
+	if len(patch.Args) > 0 {
+		merged.Args = patch.Args
+	}
+	if patch.WorkingDir != "" {
+		merged.WorkingDir = patch.WorkingDir
+	}
+	if len(patch.Ports) > 0 {
+		merged.Ports = patch.Ports
+	}
+	if len(patch.EnvFrom) > 0 {
+		merged.EnvFrom = patch.EnvFrom
+	}
+	if len(patch.Env) > 0 {
+		merged.Env = mergeEnvVars(base.Env, patch.Env)
+	}
+	if patch.Resources.Limits != nil || patch.Resources.Requests != nil {
+		merged.Resources = patch.Resources
+	}
+	if len(patch.VolumeMounts) > 0 {
+		merged.VolumeMounts = patch.VolumeMounts
+	}
+	if len(patch.VolumeDevices) > 0 {
+		merged.VolumeDevices = patch.VolumeDevices
+	}
+	if patch.LivenessProbe != nil {
+		merged.LivenessProbe = patch.LivenessProbe
+	}
+	if patch.ReadinessProbe != nil {
+		merged.ReadinessProbe = patch.ReadinessProbe
+	}
+	if patch.StartupProbe != nil {
+		merged.StartupProbe = patch.StartupProbe
+	}
+	if patch.Lifecycle != nil {
+		merged.Lifecycle = patch.Lifecycle
+	}
+	if patch.TerminationMessagePath != "" {
+		merged.TerminationMessagePath = patch.TerminationMessagePath
+	}
+	if patch.TerminationMessagePolicy != "" {
+		merged.TerminationMessagePolicy = patch.TerminationMessagePolicy
+	}
+	if patch.SecurityContext != nil {
+		merged.SecurityContext = patch.SecurityContext
+	}
+	if patch.Stdin {
+		merged.Stdin = patch.Stdin
+	}
+	if patch.StdinOnce {
+		merged.StdinOnce = patch.StdinOnce
+	}
+	if patch.TTY {
+		merged.TTY = patch.TTY
+	}
+
+	return merged
+}
+
+// mergeEnvVars merges patch env vars into base env vars using name as merge key.
+// Patch vars with the same name overwrite base vars; new patch vars are appended.
+func mergeEnvVars(base, patch []corev1.EnvVar) []corev1.EnvVar {
+	patchByName := make(map[string]corev1.EnvVar, len(patch))
+	for _, e := range patch {
+		patchByName[e.Name] = e
+	}
+
+	result := make([]corev1.EnvVar, 0, len(base)+len(patch))
+	baseNames := make(map[string]bool, len(base))
+
+	for _, e := range base {
+		baseNames[e.Name] = true
+		if p, ok := patchByName[e.Name]; ok {
+			result = append(result, p)
+		} else {
+			result = append(result, e)
+		}
+	}
+
+	for _, e := range patch {
+		if !baseNames[e.Name] {
+			result = append(result, e)
+		}
+	}
+
+	return result
 }
