@@ -116,9 +116,7 @@ func SetupControllerConfig(client crclient.Client) error {
 		return err
 	}
 
-	internalConfig = &controller.OperatorConfiguration{}
-
-	namespace, err := infrastructure.GetNamespace()
+	namespace, err := infrastructure.GetWatchNamespace()
 	if err != nil {
 		return err
 	}
@@ -128,6 +126,9 @@ func SetupControllerConfig(client crclient.Client) error {
 	if err != nil {
 		return err
 	}
+
+	internalConfig = &controller.OperatorConfiguration{}
+
 	if config == nil {
 		internalConfig = defaultConfig.DeepCopy()
 	} else {
@@ -512,22 +513,22 @@ func mergeConfig(from, to *controller.OperatorConfiguration) {
 func mergePodSecurityContext(base, patch *corev1.PodSecurityContext) *corev1.PodSecurityContext {
 	baseBytes, err := json.Marshal(base)
 	if err != nil {
-		log.Info("Failed to serialize base pod security context: %s", err)
+		log.Info("Failed to serialize base pod security context", "error", err)
 		return base
 	}
 	patchBytes, err := json.Marshal(patch)
 	if err != nil {
-		log.Info("Failed to serialize configured pod security context: %s", err)
+		log.Info("Failed to serialize configured pod security context", "error", err)
 		return base
 	}
 	patchedBytes, err := strategicpatch.StrategicMergePatch(baseBytes, patchBytes, &corev1.PodSecurityContext{})
 	if err != nil {
-		log.Info("Failed to merge configured pod security context: %s", err)
+		log.Info("Failed to merge configured pod security context", "error", err)
 		return base
 	}
 	patched := &corev1.PodSecurityContext{}
 	if err := json.Unmarshal(patchedBytes, patched); err != nil {
-		log.Info("Failed to deserialize patched pod security context: %s", patched)
+		log.Info("Failed to deserialize patched pod security context", "error", err)
 		return base
 	}
 	return patched
@@ -536,22 +537,22 @@ func mergePodSecurityContext(base, patch *corev1.PodSecurityContext) *corev1.Pod
 func mergeContainerSecurityContext(base, patch *corev1.SecurityContext) *corev1.SecurityContext {
 	baseBytes, err := json.Marshal(base)
 	if err != nil {
-		log.Info("Failed to serialize base container security context: %s", err)
+		log.Info("Failed to serialize base container security context", "error", err)
 		return base
 	}
 	patchBytes, err := json.Marshal(patch)
 	if err != nil {
-		log.Info("Failed to serialize configured container security context: %s", err)
+		log.Info("Failed to serialize configured container security context", "error", err)
 		return base
 	}
 	patchedBytes, err := strategicpatch.StrategicMergePatch(baseBytes, patchBytes, &corev1.SecurityContext{})
 	if err != nil {
-		log.Info("Failed to merge configured container security context: %s", err)
+		log.Info("Failed to merge configured container security context", "error", err)
 		return base
 	}
 	patched := &corev1.SecurityContext{}
 	if err := json.Unmarshal(patchedBytes, patched); err != nil {
-		log.Info("Failed to deserialize patched container security context: %s", patched)
+		log.Info("Failed to deserialize patched container security context", "error", err)
 		return base
 	}
 	return patched
