@@ -434,7 +434,9 @@ func (r *DevWorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		// Ensure init-persistent-home container has correct fields after merge
 		for i := range merged {
 			if merged[i].Name == constants.HomeInitComponentName {
-				home.EnsureHomeInitContainerFields(&merged[i], home.InferWorkspaceImage(&workspace.Spec.Template), constants.HomeVolumeName)
+				if err := home.EnsureHomeInitContainerFields(&merged[i]); err != nil {
+					return r.failWorkspace(workspace, fmt.Sprintf("Failed to validate init-persistent-home container: %s", err), metrics.ReasonBadRequest, reqLogger, &reconcileStatus), nil
+				}
 			}
 		}
 

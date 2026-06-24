@@ -325,24 +325,3 @@ func inferInitContainer(dwTemplateSpec *v1alpha2.DevWorkspaceTemplateSpec) *v1al
 	return nil
 }
 
-// EnsureHomeInitContainerFields enforces the correct image and VolumeMount on an
-// init-persistent-home container regardless of what custom config provides.
-// If container.Image is empty, it is set to image.
-// The VolumeMount for homeVolumeName -> /home/user/ is always set.
-func EnsureHomeInitContainerFields(container *corev1.Container, image, homeVolumeName string) {
-	if container.Image == "" {
-		container.Image = image
-	}
-	// Ensure the persistent-home volume mount is always present and correct
-	mountPath := constants.HomeUserDirectory
-	for i, vm := range container.VolumeMounts {
-		if vm.Name == homeVolumeName {
-			container.VolumeMounts[i].MountPath = mountPath
-			return
-		}
-	}
-	container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
-		Name:      homeVolumeName,
-		MountPath: mountPath,
-	})
-}
