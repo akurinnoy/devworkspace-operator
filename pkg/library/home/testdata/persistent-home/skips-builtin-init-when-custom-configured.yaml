@@ -1,0 +1,37 @@
+name: "Skips built-in init container when custom init-persistent-home is configured in DWOC"
+
+input:
+  devworkspaceId: "test-workspaceid"
+  config:
+    workspace:
+      persistUserHome:
+        enabled: true
+      initContainers:
+        - name: init-persistent-home
+          image: custom-init-image
+  workspace:
+    components:
+      - name: testing-container-1
+        container:
+          image: testing-image-1
+          volumeMounts:
+            - name: my-defined-volume
+              path: /my-defined-volume-path
+      - name: my-defined-volume
+        volume: {}
+
+output:
+  workspace:
+    components:
+      - name: testing-container-1
+        container:
+          image: testing-image-1
+          volumeMounts:
+            - name: my-defined-volume
+              path: /my-defined-volume-path
+            - name: persistent-home
+              path: /home/user/
+      - name: my-defined-volume
+        volume: {}
+      - name: persistent-home
+        volume: {}

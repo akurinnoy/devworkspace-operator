@@ -20,7 +20,6 @@ import (
 
 	"github.com/devfile/api/v2/pkg/apis/workspaces/v1alpha2"
 	devfilevalidation "github.com/devfile/api/v2/pkg/validation"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/utils/pointer"
 
 	"github.com/devfile/devworkspace-operator/pkg/common"
@@ -62,8 +61,10 @@ func AddPersistentHomeVolume(workspace *common.DevWorkspaceWithConfig) (*v1alpha
 		Path: constants.HomeUserDirectory,
 	}
 
-	// Add default init container only if not disabled and no custom init is configured
-	if workspace.Config.Workspace.PersistUserHome.DisableInitContainer == nil || !*workspace.Config.Workspace.PersistUserHome.DisableInitContainer {
+	// Add default init container only if not disabled and no custom init-persistent-home is configured in DWOC
+	disableInit := workspace.Config.Workspace.PersistUserHome.DisableInitContainer != nil && *workspace.Config.Workspace.PersistUserHome.DisableInitContainer
+	hasCustomHomeInit := hasInitPersistentHomeInConfig(workspace)
+	if !disableInit && !hasCustomHomeInit {
 		err := addInitContainer(dwTemplateSpecCopy)
 		if err != nil {
 			return nil, fmt.Errorf("failed to add init container for home persistence setup: %w", err)
@@ -247,16 +248,3 @@ func inferInitContainer(dwTemplateSpec *v1alpha2.DevWorkspaceTemplateSpec) *v1al
 	return nil
 }
 
-// EnsureHomeInitContainerFields ensures that an init-persistent-home container has
-// the correct Command and VolumeMounts.
-func EnsureHomeInitContainerFields(c *corev1.Container) error {
-	// Set default command only if not provided
-	if len(c.Command) == 0 {
-		c.Command = []string{"/bin/sh", "-c"}
-	}
-	c.VolumeMounts = []corev1.VolumeMount{{
-		Name:      constants.HomeVolumeName,
-		MountPath: constants.HomeUserDirectory,
-	}}
-	return nil
-}
