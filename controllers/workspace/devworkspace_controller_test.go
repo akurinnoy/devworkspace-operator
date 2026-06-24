@@ -1776,6 +1776,57 @@ var _ = Describe("DevWorkspace Controller", func() {
 			testControllerCfg.Workspace.InitContainers = savedInitContainers
 		})
 
+		It("BackwardCompatNoCustomInit: workspace starts normally when no custom init containers are configured", func() {
+			By("Ensuring testControllerCfg has nil InitContainers (backward-compat scenario)")
+			savedInitContainers := testControllerCfg.Workspace.InitContainers
+			DeferCleanup(func() {
+				testControllerCfg.Workspace.InitContainers = savedInitContainers
+				config.SetGlobalConfigForTesting(testControllerCfg)
+			})
+
+			By("Saving and enabling PersistUserHome")
+			if testControllerCfg.Workspace.PersistUserHome == nil {
+				testControllerCfg.Workspace.PersistUserHome = &controllerv1alpha1.PersistentHomeConfig{}
+			}
+			savedPersistEnabled := testControllerCfg.Workspace.PersistUserHome.Enabled
+			DeferCleanup(func() {
+				testControllerCfg.Workspace.PersistUserHome.Enabled = savedPersistEnabled
+				config.SetGlobalConfigForTesting(testControllerCfg)
+			})
+
+			testControllerCfg.Workspace.InitContainers = nil
+			testControllerCfg.Workspace.PersistUserHome.Enabled = ptr.To(true)
+			config.SetGlobalConfigForTesting(testControllerCfg)
+
+			By("Creating DevWorkspace")
+			createDevWorkspace(devWorkspaceName, "test-devworkspace.yaml")
+			devworkspace := getExistingDevWorkspace(devWorkspaceName)
+			workspaceID := devworkspace.Status.DevWorkspaceId
+
+			By("Manually making Routing ready to continue")
+			markRoutingReady(testURL, common.DevWorkspaceRoutingName(workspaceID))
+
+			By("Setting the deployment to have 1 ready replica")
+			markDeploymentReady(common.DeploymentName(workspaceID))
+
+			By("Verifying the default init-persistent-home container is present in the deployment")
+			deploy := &appsv1.Deployment{}
+			deployNN := namespacedName(common.DeploymentName(workspaceID), testNamespace)
+			Eventually(func() error {
+				if err := k8sClient.Get(ctx, deployNN, deploy); err != nil {
+					return fmt.Errorf("failed to get deployment: %w", err)
+				}
+				for _, c := range deploy.Spec.Template.Spec.InitContainers {
+					if c.Name == constants.HomeInitComponentName {
+						return nil
+					}
+				}
+				return fmt.Errorf("init container %q not found in deployment; init containers: %v",
+					constants.HomeInitComponentName, deploy.Spec.Template.Spec.InitContainers)
+			}, 30*time.Second, 1*time.Second).Should(Succeed(),
+				"default init-persistent-home should be present when no custom init containers are configured")
+		})
+
 		It("AdditionalInitContainersInjected: additional non-home init containers are injected after init-persistent-home", func() {
 			By("Saving original InitContainers and PersistUserHome from testControllerCfg")
 			savedInitContainers := testControllerCfg.Workspace.InitContainers
