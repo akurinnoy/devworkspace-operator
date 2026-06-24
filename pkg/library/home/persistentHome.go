@@ -253,6 +253,8 @@ func EnsureHomeInitContainerFields(c *corev1.Container) error {
 	// Set default command only if not provided
 	if len(c.Command) == 0 {
 		c.Command = []string{"/bin/sh", "-c"}
+	} else if len(c.Command) != 2 || c.Command[0] != "/bin/sh" || c.Command[1] != "-c" {
+		return fmt.Errorf("Invalid init-persistent-home container: command must be exactly [/bin/sh, -c]")
 	}
 	c.VolumeMounts = []corev1.VolumeMount{{
 		Name:      constants.HomeVolumeName,
