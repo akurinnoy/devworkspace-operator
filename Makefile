@@ -166,7 +166,7 @@ test: generate fmt vet manifests envtest
 	    ginkgo run --timeout 5m --randomize-all -coverprofile controller.cover.out controllers/workspace controllers/controller/devworkspacerouting
   else
 	  KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
-	    go test $(shell go list ./... | grep -v test/e2e) -coverprofile cover.out
+	    go test -p 1 $(shell go list ./... | grep -v test/e2e)
   endif
 
 ### test_e2e: Runs e2e test on the cluster set in context. DevWorkspace Operator must be already deployed

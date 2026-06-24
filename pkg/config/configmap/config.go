@@ -46,7 +46,7 @@ type ControllerConfig struct {
 }
 
 func (wc *ControllerConfig) update(configMap *corev1.ConfigMap) {
-	log.Info("Updating the configuration from config map '%s' in namespace '%s'", configMap.Name, configMap.Namespace)
+	log.Info("Updating the configuration from config map", "name", configMap.Name, "namespace", configMap.Namespace)
 	wc.configMap = configMap
 }
 
