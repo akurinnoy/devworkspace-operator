@@ -39,7 +39,7 @@ func MigrateConfigFromConfigMap(client crclient.Client) error {
 		return nil
 	}
 
-	namespace, err := infrastructure.GetNamespace()
+	namespace, err := infrastructure.GetWatchNamespace()
 	if err != nil {
 		return err
 	}

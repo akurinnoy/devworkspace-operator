@@ -113,7 +113,7 @@ func LoadControllerConfig(nonCachedClient client.Client) (found bool, err error)
 	if found && len(configMapNamespace) > 0 {
 		ConfigMapReference.Namespace = configMapNamespace
 	} else {
-		namespace, err := infrastructure.GetNamespace()
+		namespace, err := infrastructure.GetWatchNamespace()
 		if err != nil {
 			return false, err
 		}

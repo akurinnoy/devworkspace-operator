@@ -118,7 +118,7 @@ func SetupControllerConfig(client crclient.Client) error {
 
 	internalConfig = &controller.OperatorConfiguration{}
 
-	namespace, err := infrastructure.GetNamespace()
+	namespace, err := infrastructure.GetWatchNamespace()
 	if err != nil {
 		return err
 	}

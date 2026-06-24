@@ -72,7 +72,7 @@ func HandleRegistryAuthSecret(ctx context.Context, c client.Client, workspace *d
 	}
 
 	if operatorConfigNamespace == "" {
-		resolvedNS, nsErr := infrastructure.GetNamespace()
+		resolvedNS, nsErr := infrastructure.GetWatchNamespace()
 		if nsErr != nil {
 			return nil, fmt.Errorf("cannot resolve operator namespace to copy registry auth secret: %w", nsErr)
 		}
