@@ -36,7 +36,7 @@ func TestCustomInitPersistentHome(t *testing.T) {
 		expectCustomInitSkipped bool
 	}{
 		{
-			name: "Skips default init when custom init-persistent-home is provided in DWOC",
+			name: "Uses custom init when custom init-persistent-home is provided in DWOC",
 			workspace: &common.DevWorkspaceWithConfig{
 				DevWorkspace: &dw.DevWorkspace{
 					Spec: dw.DevWorkspaceSpec{
@@ -72,7 +72,9 @@ func TestCustomInitPersistentHome(t *testing.T) {
 					},
 				},
 			},
-			expectDefaultInitAdded: false,
+			// Custom init-persistent-home is added as a component named HomeInitComponentName
+			// (replacing the default stow-based init), so the component IS present.
+			expectDefaultInitAdded: true,
 		},
 		{
 			name: "Adds default init when no custom init-persistent-home is provided",

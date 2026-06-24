@@ -33,5 +33,21 @@ output:
               path: /home/user/
       - name: my-defined-volume
         volume: {}
+      - name: init-persistent-home
+        container:
+          image: custom-init-image
+          command:
+            - /bin/sh
+            - -c
+          volumeMounts:
+            - name: persistent-home
+              path: /home/user/
       - name: persistent-home
         volume: {}
+    commands:
+      - id: init-persistent-home
+        apply:
+          component: init-persistent-home
+    events:
+      preStart:
+        - init-persistent-home
