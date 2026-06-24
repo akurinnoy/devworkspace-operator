@@ -28,6 +28,93 @@ import (
 	"k8s.io/utils/ptr"
 )
 
+func TestEnsureHomeInitContainerFields(t *testing.T) {
+	tests := []struct {
+		name       string
+		input      corev1.Container
+		wantErr    bool
+		wantErrMsg string
+		wantCmd    []string
+	}{
+		{
+			name:    "Container with no command set - sets default command",
+			input:   corev1.Container{},
+			wantErr: false,
+			wantCmd: []string{"/bin/sh", "-c"},
+		},
+		{
+			name: "Container with command [/bin/sh, -c] - no error, command preserved",
+			input: corev1.Container{
+				Command: []string{"/bin/sh", "-c"},
+			},
+			wantErr: false,
+			wantCmd: []string{"/bin/sh", "-c"},
+		},
+		{
+			name: "Container with command [/bin/bash, -c] - error returned",
+			input: corev1.Container{
+				Command: []string{"/bin/bash", "-c"},
+			},
+			wantErr:    true,
+			wantErrMsg: "Invalid init-persistent-home container: command must be exactly [/bin/sh, -c]",
+		},
+		{
+			name: "Container with command [/bin/sh] (missing -c) - error returned",
+			input: corev1.Container{
+				Command: []string{"/bin/sh"},
+			},
+			wantErr:    true,
+			wantErrMsg: "Invalid init-persistent-home container: command must be exactly [/bin/sh, -c]",
+		},
+		{
+			name: "Container with command [/bin/sh, -c, extra] (too many args) - error returned",
+			input: corev1.Container{
+				Command: []string{"/bin/sh", "-c", "extra"},
+			},
+			wantErr:    true,
+			wantErrMsg: "Invalid init-persistent-home container: command must be exactly [/bin/sh, -c]",
+		},
+		{
+			name: "VolumeMounts are always overwritten regardless of command validity - valid command",
+			input: corev1.Container{
+				Command: []string{"/bin/sh", "-c"},
+				VolumeMounts: []corev1.VolumeMount{
+					{
+						Name:      "some-other-volume",
+						MountPath: "/some/path",
+					},
+				},
+			},
+			wantErr: false,
+			wantCmd: []string{"/bin/sh", "-c"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := tt.input.DeepCopy()
+			err := EnsureHomeInitContainerFields(c)
+
+			if tt.wantErr {
+				assert.Error(t, err)
+				if tt.wantErrMsg != "" {
+					assert.EqualError(t, err, tt.wantErrMsg)
+				}
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.wantCmd, c.Command, "Command should be set correctly")
+				// VolumeMounts should always be overwritten to the home volume mount
+				assert.Equal(t, []corev1.VolumeMount{
+					{
+						Name:      constants.HomeVolumeName,
+						MountPath: constants.HomeUserDirectory,
+					},
+				}, c.VolumeMounts, "VolumeMounts should always be overwritten")
+			}
+		})
+	}
+}
+
 func TestCustomInitPersistentHome(t *testing.T) {
 	tests := []struct {
 		name                    string
