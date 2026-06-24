@@ -1,0 +1,33 @@
+# DevWorkspaceOperatorConfig fixture for custom init container tests.
+# This file documents the DWOC configuration used in controller integration tests.
+# In the tests, this config is applied programmatically via config.SetGlobalConfigForTesting().
+#
+# Example DWOC that configures init-persistent-home with custom args:
+#
+# apiVersion: controller.devfile.io/v1alpha1
+# kind: DevWorkspaceOperatorConfig
+# metadata:
+#   name: custom-init-container-dwoc
+# config:
+#   workspace:
+#     persistUserHome:
+#       enabled: true
+#     initContainers:
+#       - name: init-persistent-home
+#         args:
+#           - "echo 'custom home init'"
+#
+# And an example DWOC with an additional non-init-persistent-home init container:
+#
+# config:
+#   workspace:
+#     persistUserHome:
+#       enabled: true
+#     initContainers:
+#       - name: init-persistent-home
+#         args:
+#           - "echo 'custom home init'"
+#       - name: extra-init-container
+#         image: busybox:latest
+#         command: ["sh", "-c"]
+#         args: ["echo 'extra init'"]
