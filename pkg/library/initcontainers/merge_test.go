@@ -132,6 +132,70 @@ func TestMergeInitContainers(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "additional DWOC non-init-persistent-home containers are appended in order",
+			base: []corev1.Container{
+				{Name: "init-persistent-home", Image: "workspace-image:latest"},
+				{Name: "base-setup", Image: "base-image:latest"},
+			},
+			patches: []corev1.Container{
+				{Name: "dwoc-extra-a", Image: "extra-a-image:latest"},
+				{Name: "dwoc-extra-b", Image: "extra-b-image:latest"},
+			},
+			want: []corev1.Container{
+				{Name: "init-persistent-home", Image: "workspace-image:latest"},
+				{Name: "base-setup", Image: "base-image:latest"},
+				{Name: "dwoc-extra-a", Image: "extra-a-image:latest"},
+				{Name: "dwoc-extra-b", Image: "extra-b-image:latest"},
+			},
+		},
+		{
+			name: "multiple DWOC containers maintain their relative order after merge",
+			base: []corev1.Container{
+				{Name: "base-only", Image: "base-image:latest"},
+			},
+			patches: []corev1.Container{
+				{Name: "dwoc-first", Image: "first-image:latest"},
+				{Name: "dwoc-second", Image: "second-image:latest"},
+			},
+			want: []corev1.Container{
+				{Name: "base-only", Image: "base-image:latest"},
+				{Name: "dwoc-first", Image: "first-image:latest"},
+				{Name: "dwoc-second", Image: "second-image:latest"},
+			},
+		},
+		{
+			name: "DWOC container with same name as a devfile init container — DWOC wins",
+			base: []corev1.Container{
+				{
+					Name:    "devfile-init",
+					Image:   "devfile-image:latest",
+					Command: []string{"/bin/sh"},
+					Args:    []string{"devfile-arg"},
+				},
+			},
+			patches: []corev1.Container{
+				{
+					Name:  "devfile-init",
+					Image: "dwoc-image:latest",
+					Args:  []string{"dwoc-arg"},
+					Env: []corev1.EnvVar{
+						{Name: "DWOC_VAR", Value: "dwoc-value"},
+					},
+				},
+			},
+			want: []corev1.Container{
+				{
+					Name:    "devfile-init",
+					Image:   "dwoc-image:latest",
+					Command: []string{"/bin/sh"},
+					Args:    []string{"dwoc-arg"},
+					Env: []corev1.EnvVar{
+						{Name: "DWOC_VAR", Value: "dwoc-value"},
+					},
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
