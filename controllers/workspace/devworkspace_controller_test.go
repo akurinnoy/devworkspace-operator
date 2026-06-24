@@ -1729,6 +1729,53 @@ var _ = Describe("DevWorkspace Controller", func() {
 			}, 30*time.Second, 1*time.Second).Should(Succeed(),
 				"init-persistent-home should have custom-arg-123, non-empty VolumeMounts, and non-empty Image")
 		})
+		It("InvalidCommandFailsWorkspace: invalid init-persistent-home command causes workspace to fail", func() {
+			By("Saving original InitContainers and PersistUserHome from testControllerCfg")
+			savedInitContainers := testControllerCfg.Workspace.InitContainers
+			if testControllerCfg.Workspace.PersistUserHome == nil {
+				testControllerCfg.Workspace.PersistUserHome = &controllerv1alpha1.PersistentHomeConfig{}
+			}
+			savedPersistEnabled := testControllerCfg.Workspace.PersistUserHome.Enabled
+			DeferCleanup(func() {
+				testControllerCfg.Workspace.InitContainers = nil
+				testControllerCfg.Workspace.PersistUserHome.Enabled = savedPersistEnabled
+				config.SetGlobalConfigForTesting(testControllerCfg)
+			})
+
+			By("Configuring testControllerCfg with invalid init-persistent-home command and PersistUserHome enabled")
+			testControllerCfg.Workspace.InitContainers = []corev1.Container{
+				{
+					Name:    constants.HomeInitComponentName,
+					Command: []string{"/bin/bash", "-c"},
+				},
+			}
+			testControllerCfg.Workspace.PersistUserHome.Enabled = ptr.To(true)
+			config.SetGlobalConfigForTesting(testControllerCfg)
+
+			By("Creating DevWorkspace")
+			createDevWorkspace(devWorkspaceName, "test-devworkspace.yaml")
+			dwNamespacedName := namespacedName(devWorkspaceName, testNamespace)
+
+			By("Checking that DevWorkspace enters Failed phase with expected message")
+			workspace := &dw.DevWorkspace{}
+			Eventually(func() (dw.DevWorkspacePhase, error) {
+				if err := k8sClient.Get(ctx, dwNamespacedName, workspace); err != nil {
+					return "", err
+				}
+				GinkgoWriter.Printf("Waiting for DevWorkspace to fail -- Phase: %s, Message: %s\n",
+					workspace.Status.Phase, workspace.Status.Message)
+				return workspace.Status.Phase, nil
+			}, 30*time.Second, 1*time.Second).Should(Equal(dw.DevWorkspaceStatusFailed),
+				"DevWorkspace should fail due to invalid init-persistent-home command")
+
+			Expect(workspace.Status.Message).Should(ContainSubstring(
+				"Invalid init-persistent-home container: command must be exactly [/bin/sh, -c]"),
+				"Failure message should describe the invalid command error")
+
+			// Restore saved value
+			testControllerCfg.Workspace.InitContainers = savedInitContainers
+		})
+
 	})
 
 })
