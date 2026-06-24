@@ -1776,6 +1776,76 @@ var _ = Describe("DevWorkspace Controller", func() {
 			testControllerCfg.Workspace.InitContainers = savedInitContainers
 		})
 
+		It("AdditionalInitContainersInjected: additional non-home init containers are injected after init-persistent-home", func() {
+			By("Saving original InitContainers and PersistUserHome from testControllerCfg")
+			savedInitContainers := testControllerCfg.Workspace.InitContainers
+			DeferCleanup(func() {
+				testControllerCfg.Workspace.InitContainers = nil
+				config.SetGlobalConfigForTesting(testControllerCfg)
+			})
+
+			By("Saving and enabling PersistUserHome")
+			if testControllerCfg.Workspace.PersistUserHome == nil {
+				testControllerCfg.Workspace.PersistUserHome = &controllerv1alpha1.PersistentHomeConfig{}
+			}
+			savedPersistEnabled := testControllerCfg.Workspace.PersistUserHome.Enabled
+			DeferCleanup(func() {
+				testControllerCfg.Workspace.PersistUserHome.Enabled = savedPersistEnabled
+				config.SetGlobalConfigForTesting(testControllerCfg)
+			})
+
+			By("Configuring testControllerCfg with home init container and custom-tooling init container")
+			testControllerCfg.Workspace.InitContainers = []corev1.Container{
+				{Name: constants.HomeInitComponentName, Args: []string{"custom-arg-456"}},
+				{Name: "custom-tooling", Image: "busybox:latest", Command: []string{"/bin/sh"}, Args: []string{"-c", "echo tooling-ready"}},
+			}
+			testControllerCfg.Workspace.PersistUserHome.Enabled = ptr.To(true)
+			_ = savedInitContainers
+			config.SetGlobalConfigForTesting(testControllerCfg)
+
+			By("Creating DevWorkspace")
+			createDevWorkspace(devWorkspaceName, "test-devworkspace.yaml")
+			devworkspace := getExistingDevWorkspace(devWorkspaceName)
+			workspaceID := devworkspace.Status.DevWorkspaceId
+
+			By("Manually making Routing ready to continue")
+			markRoutingReady(testURL, common.DevWorkspaceRoutingName(workspaceID))
+
+			By("Setting the deployment to have 1 ready replica")
+			markDeploymentReady(common.DeploymentName(workspaceID))
+
+			By("Verifying both init containers are present and init-persistent-home appears before custom-tooling")
+			deploy := &appsv1.Deployment{}
+			deployNN := namespacedName(common.DeploymentName(workspaceID), testNamespace)
+			Eventually(func() error {
+				if err := k8sClient.Get(ctx, deployNN, deploy); err != nil {
+					return fmt.Errorf("failed to get deployment: %w", err)
+				}
+				initContainers := deploy.Spec.Template.Spec.InitContainers
+				homeIdx := -1
+				toolingIdx := -1
+				for i, c := range initContainers {
+					if c.Name == constants.HomeInitComponentName {
+						homeIdx = i
+					}
+					if c.Name == "custom-tooling" {
+						toolingIdx = i
+					}
+				}
+				if homeIdx == -1 {
+					return fmt.Errorf("init container not found: init-persistent-home")
+				}
+				if toolingIdx == -1 {
+					return fmt.Errorf("init container not found: custom-tooling")
+				}
+				if homeIdx >= toolingIdx {
+					return fmt.Errorf("expected init-persistent-home (idx %d) before custom-tooling (idx %d)", homeIdx, toolingIdx)
+				}
+				return nil
+			}, 30*time.Second, 1*time.Second).Should(Succeed(),
+				"init-persistent-home should appear before custom-tooling and both containers should be present")
+		})
+
 	})
 
 })
