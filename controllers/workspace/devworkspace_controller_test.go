@@ -1633,4 +1633,102 @@ var _ = Describe("DevWorkspace Controller", func() {
 		})
 	})
 
+	Context("Custom init container overrides", func() {
+		const testURL = "test-url"
+
+		BeforeEach(func() {
+			workspacecontroller.SetupHttpClientsForTesting(&http.Client{
+				Transport: &testutil.TestRoundTripper{
+					Data: map[string]testutil.TestResponse{
+						fmt.Sprintf("%s/healthz", testURL): {
+							StatusCode: http.StatusOK,
+						},
+					},
+				},
+			})
+		})
+
+		AfterEach(func() {
+			deleteDevWorkspace(devWorkspaceName)
+			workspacecontroller.SetupHttpClientsForTesting(getBasicTestHttpClient())
+		})
+
+		It("CustomInitPersistentHome: custom init-persistent-home override sets args, volume mounts and image", func() {
+			By("Saving original InitContainers from testControllerCfg")
+			savedInitContainers := testControllerCfg.Workspace.InitContainers
+			DeferCleanup(func() {
+				testControllerCfg.Workspace.InitContainers = savedInitContainers
+				config.SetGlobalConfigForTesting(testControllerCfg)
+			})
+
+			By("Saving and enabling PersistUserHome")
+			if testControllerCfg.Workspace.PersistUserHome == nil {
+				testControllerCfg.Workspace.PersistUserHome = &controllerv1alpha1.PersistentHomeConfig{}
+			}
+			savedPersistEnabled := testControllerCfg.Workspace.PersistUserHome.Enabled
+			DeferCleanup(func() {
+				testControllerCfg.Workspace.PersistUserHome.Enabled = savedPersistEnabled
+				config.SetGlobalConfigForTesting(testControllerCfg)
+			})
+
+			By("Configuring testControllerCfg with custom init-persistent-home")
+			testControllerCfg.Workspace.InitContainers = []corev1.Container{
+				{
+					Name: constants.HomeInitComponentName,
+					Args: []string{"custom-arg-123"},
+				},
+			}
+			testControllerCfg.Workspace.PersistUserHome.Enabled = ptr.To(true)
+			config.SetGlobalConfigForTesting(testControllerCfg)
+
+			By("Creating DevWorkspace")
+			createDevWorkspace(devWorkspaceName, "test-devworkspace.yaml")
+			devworkspace := getExistingDevWorkspace(devWorkspaceName)
+			workspaceID := devworkspace.Status.DevWorkspaceId
+
+			By("Manually making Routing ready to continue")
+			markRoutingReady(testURL, common.DevWorkspaceRoutingName(workspaceID))
+
+			By("Setting the deployment to have 1 ready replica")
+			markDeploymentReady(common.DeploymentName(workspaceID))
+
+			By("Verifying init-persistent-home has custom-arg-123, non-empty VolumeMounts, and non-empty Image")
+			deploy := &appsv1.Deployment{}
+			deployNN := namespacedName(common.DeploymentName(workspaceID), testNamespace)
+			Eventually(func() error {
+				if err := k8sClient.Get(ctx, deployNN, deploy); err != nil {
+					return fmt.Errorf("failed to get deployment: %w", err)
+				}
+				var homeInit *corev1.Container
+				for i := range deploy.Spec.Template.Spec.InitContainers {
+					if deploy.Spec.Template.Spec.InitContainers[i].Name == constants.HomeInitComponentName {
+						homeInit = &deploy.Spec.Template.Spec.InitContainers[i]
+						break
+					}
+				}
+				if homeInit == nil {
+					return fmt.Errorf("init container %q not found in deployment init containers", constants.HomeInitComponentName)
+				}
+				found := false
+				for _, arg := range homeInit.Args {
+					if arg == "custom-arg-123" {
+						found = true
+						break
+					}
+				}
+				if !found {
+					return fmt.Errorf("expected arg %q not found in init container args %v", "custom-arg-123", homeInit.Args)
+				}
+				if len(homeInit.VolumeMounts) == 0 {
+					return fmt.Errorf("expected non-empty VolumeMounts on init-persistent-home, got none")
+				}
+				if homeInit.Image == "" {
+					return fmt.Errorf("expected non-empty Image on init-persistent-home, got empty string")
+				}
+				return nil
+			}, 30*time.Second, 1*time.Second).Should(Succeed(),
+				"init-persistent-home should have custom-arg-123, non-empty VolumeMounts, and non-empty Image")
+		})
+	})
+
 })
