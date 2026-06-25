@@ -847,7 +847,7 @@ var _ = Describe("DevWorkspace Controller", func() {
 
 			mergedSecretNN := namespacedName(constants.GitCredentialsMergedSecretName, testNamespace)
 			mergedSecret := &corev1.Secret{}
-			Expect(k8sClient.Get(ctx, mergedSecretNN, mergedSecret)).Error()
+			Expect(k8sClient.Get(ctx, mergedSecretNN, mergedSecret)).Should(HaveOccurred())
 
 			By("Creating git-credential secret")
 			secret := generateSecret("git-credential-secret", corev1.SecretTypeOpaque)
@@ -1425,7 +1425,7 @@ var _ = Describe("DevWorkspace Controller", func() {
 				}
 			}
 			Expect(cloneInitContainer.Name).To(BeEmpty(), "Project clone init container should be omitted when restoring from backup")
-			Expect(restoreInitContainer).ToNot(BeNil(), "Workspace restore init container should not be nil")
+			Expect(restoreInitContainer.Name).ToNot(BeEmpty(), "Workspace restore init container should not be nil")
 			Expect(restoreInitContainer.Name).To(Equal(restore.WorkspaceRestoreContainerName), "Workspace restore init container should be present in deployment")
 
 			Expect(restoreInitContainer.Command).To(Equal([]string{"/workspace-recovery.sh"}), "Restore init container should have correct command")
@@ -1487,7 +1487,7 @@ var _ = Describe("DevWorkspace Controller", func() {
 				}
 			}
 			Expect(cloneInitContainer.Name).To(BeEmpty(), "Project clone init container should be omitted when restoring from backup")
-			Expect(restoreInitContainer).ToNot(BeNil(), "Workspace restore init container should not be nil")
+			Expect(restoreInitContainer.Name).ToNot(BeEmpty(), "Workspace restore init container should not be nil")
 			Expect(restoreInitContainer.Name).To(Equal(restore.WorkspaceRestoreContainerName), "Workspace restore init container should be present in deployment")
 
 			Expect(restoreInitContainer.Command).To(Equal([]string{"/workspace-recovery.sh"}), "Restore init container should have correct command")
@@ -1549,7 +1549,7 @@ var _ = Describe("DevWorkspace Controller", func() {
 				}
 			}
 			Expect(restoreInitContainer.Name).To(BeEmpty(), "Workspace restore init container should be omitted when restore is disabled")
-			Expect(cloneInitContainer).ToNot(BeNil(), "Project clone init container should not be nil")
+			Expect(cloneInitContainer.Name).ToNot(BeEmpty(), "Project clone init container should not be nil")
 
 		})
 
@@ -1632,5 +1632,197 @@ var _ = Describe("DevWorkspace Controller", func() {
 			}
 		})
 	})
+
+
+	Context("DWOC init container injection", func() {
+		const testURL = "test-url"
+
+		BeforeEach(func() {
+			workspacecontroller.SetupHttpClientsForTesting(&http.Client{
+				Transport: &testutil.TestRoundTripper{
+					Data: map[string]testutil.TestResponse{
+						fmt.Sprintf("%s/healthz", testURL): {
+							StatusCode: http.StatusOK,
+						},
+					},
+				},
+			})
+		})
+
+		AfterEach(func() {
+			deleteDevWorkspace(devWorkspaceName)
+			workspacecontroller.SetupHttpClientsForTesting(getBasicTestHttpClient())
+			config.SetGlobalConfigForTesting(nil)
+		})
+
+		It("Applies custom init-persistent-home args override from DWOC", func() {
+			By("Configuring DWOC with init-persistent-home using custom args and persistent home enabled")
+			customArgs := []string{"custom-init-arg"}
+			config.SetGlobalConfigForTesting(&controllerv1alpha1.OperatorConfiguration{
+				Workspace: &controllerv1alpha1.WorkspaceConfig{
+					PersistUserHome: &controllerv1alpha1.PersistentHomeConfig{
+						Enabled: ptr.To[bool](true),
+					},
+					InitContainers: []corev1.Container{
+						{
+							Name: "init-persistent-home",
+							Args: customArgs,
+						},
+					},
+				},
+			})
+
+			createDevWorkspace(devWorkspaceName, "test-devworkspace-persistent-home.yaml")
+			devworkspace := getExistingDevWorkspace(devWorkspaceName)
+			workspaceID := devworkspace.Status.DevWorkspaceId
+
+			By("Manually making Routing ready to continue")
+			markRoutingReady(testURL, common.DevWorkspaceRoutingName(workspaceID))
+
+			deploy := &appsv1.Deployment{}
+			deployNN := namespacedName(common.DeploymentName(workspaceID), testNamespace)
+			Eventually(func() error {
+				return k8sClient.Get(ctx, deployNN, deploy)
+			}, timeout, interval).Should(Succeed(), "Getting workspace deployment from cluster")
+
+			By("Checking that init-persistent-home init container has custom args but original image and home volume mount")
+			initContainers := deploy.Spec.Template.Spec.InitContainers
+			var homeInitContainer *corev1.Container
+			for i := range initContainers {
+				if initContainers[i].Name == "init-persistent-home" {
+					homeInitContainer = &initContainers[i]
+					break
+				}
+			}
+			Expect(homeInitContainer).ShouldNot(BeNil(), "init-persistent-home container should be present in deployment")
+			Expect(homeInitContainer.Args).Should(Equal(customArgs), "init-persistent-home should have custom args from DWOC")
+			Expect(homeInitContainer.Image).ShouldNot(BeEmpty(), "init-persistent-home should retain original image from devfile")
+			Expect(homeInitContainer.Command).Should(Equal([]string{"/bin/sh", "-c"}), "init-persistent-home command should be set to [/bin/sh, -c]")
+			homeVolumeMount := corev1.VolumeMount{
+				Name:      "persistent-home",
+				MountPath: "/home/user/",
+			}
+			Expect(homeInitContainer.VolumeMounts).Should(ContainElement(homeVolumeMount), "init-persistent-home should have home volume mount")
+		})
+
+		It("Appends additional non-home init containers from DWOC in order", func() {
+			By("Configuring DWOC with additional non-home init containers")
+			config.SetGlobalConfigForTesting(&controllerv1alpha1.OperatorConfiguration{
+				Workspace: &controllerv1alpha1.WorkspaceConfig{
+					InitContainers: []corev1.Container{
+						{
+							Name:  "custom-init-first",
+							Image: "quay.io/example/init-first:latest",
+						},
+						{
+							Name:  "custom-init-second",
+							Image: "quay.io/example/init-second:latest",
+						},
+					},
+				},
+			})
+
+			createDevWorkspace(devWorkspaceName, "test-devworkspace.yaml")
+			devworkspace := getExistingDevWorkspace(devWorkspaceName)
+			workspaceID := devworkspace.Status.DevWorkspaceId
+
+			By("Manually making Routing ready to continue")
+			markRoutingReady(testURL, common.DevWorkspaceRoutingName(workspaceID))
+
+			deploy := &appsv1.Deployment{}
+			deployNN := namespacedName(common.DeploymentName(workspaceID), testNamespace)
+			Eventually(func() error {
+				return k8sClient.Get(ctx, deployNN, deploy)
+			}, timeout, interval).Should(Succeed(), "Getting workspace deployment from cluster")
+
+			By("Checking that custom init containers are appended to deployment in order")
+			initContainers := deploy.Spec.Template.Spec.InitContainers
+			names := make([]string, 0, len(initContainers))
+			for _, c := range initContainers {
+				names = append(names, c.Name)
+			}
+
+			firstIdx := -1
+			secondIdx := -1
+			for i, name := range names {
+				if name == "custom-init-first" {
+					firstIdx = i
+				}
+				if name == "custom-init-second" {
+					secondIdx = i
+				}
+			}
+			Expect(firstIdx).Should(BeNumerically(">=", 0), "custom-init-first should be present in deployment init containers")
+			Expect(secondIdx).Should(BeNumerically(">=", 0), "custom-init-second should be present in deployment init containers")
+			Expect(firstIdx).Should(BeNumerically("<", secondIdx), "custom-init-first should appear before custom-init-second")
+		})
+
+		It("Fails workspace when DWOC has duplicate init container names", func() {
+			By("Configuring DWOC with duplicate init container names")
+			config.SetGlobalConfigForTesting(&controllerv1alpha1.OperatorConfiguration{
+				Workspace: &controllerv1alpha1.WorkspaceConfig{
+					InitContainers: []corev1.Container{
+						{
+							Name:  "duplicate-init",
+							Image: "quay.io/example/init:latest",
+						},
+						{
+							Name:  "duplicate-init",
+							Image: "quay.io/example/init:latest",
+						},
+					},
+				},
+			})
+
+			createDevWorkspace(devWorkspaceName, "test-devworkspace.yaml")
+			dwNamespacedName := namespacedName(devWorkspaceName, testNamespace)
+
+			By("Checking that workspace enters Failed status with duplicate name error")
+			currDW := &dw.DevWorkspace{}
+			Eventually(func() (dw.DevWorkspacePhase, error) {
+				if err := k8sClient.Get(ctx, dwNamespacedName, currDW); err != nil {
+					return "", err
+				}
+				GinkgoWriter.Printf("Waiting for DevWorkspace to enter Failed phase -- Phase: %s, Message: %s\n", currDW.Status.Phase, currDW.Status.Message)
+				return currDW.Status.Phase, nil
+			}, timeout, interval).Should(Equal(dw.DevWorkspaceStatusFailed), "Workspace with duplicate init container names should enter Failed phase")
+
+			Expect(currDW.Status.Message).Should(ContainSubstring("duplicate"), "Failure message should mention duplicate init container name")
+			Expect(currDW.Status.Message).Should(ContainSubstring("duplicate-init"), "Failure message should include the duplicate init container name")
+		})
+
+		It("Fails workspace when DWOC init-persistent-home has wrong command", func() {
+			By("Configuring DWOC with init-persistent-home using wrong command")
+			config.SetGlobalConfigForTesting(&controllerv1alpha1.OperatorConfiguration{
+				Workspace: &controllerv1alpha1.WorkspaceConfig{
+					PersistUserHome: &controllerv1alpha1.PersistentHomeConfig{
+						Enabled: ptr.To[bool](true),
+					},
+					InitContainers: []corev1.Container{
+						{
+							Name:    "init-persistent-home",
+							Command: []string{"/bin/bash", "-c"},
+						},
+					},
+				},
+			})
+
+			createDevWorkspace(devWorkspaceName, "test-devworkspace-persistent-home.yaml")
+			dwNamespacedName := namespacedName(devWorkspaceName, testNamespace)
+
+			By("Checking that workspace enters Failed status with command validation error")
+			currDW := &dw.DevWorkspace{}
+			Eventually(func() (dw.DevWorkspacePhase, error) {
+				if err := k8sClient.Get(ctx, dwNamespacedName, currDW); err != nil {
+					return "", err
+				}
+				GinkgoWriter.Printf("Waiting for DevWorkspace to enter Failed phase -- Phase: %s, Message: %s\n", currDW.Status.Phase, currDW.Status.Message)
+				return currDW.Status.Phase, nil
+			}, timeout, interval).Should(Equal(dw.DevWorkspaceStatusFailed), "Workspace with wrong init-persistent-home command should enter Failed phase")
+
+			Expect(currDW.Status.Message).Should(ContainSubstring("command must be"), "Failure message should mention command validation error")
+		})
+	})
+
 
 })
