@@ -219,6 +219,83 @@ func TestCustomInitPersistentHome(t *testing.T) {
 	}
 }
 
+func TestEnsureHomeInitContainerFields(t *testing.T) {
+	tests := []struct {
+		name          string
+		container     *corev1.Container
+		expectError   bool
+		errorContains string
+		expectedCmd   []string
+	}{
+		{
+			name: "valid init container with correct command passes without error",
+			container: &corev1.Container{
+				Name:    "init-persistent-home",
+				Image:   "test-image:latest",
+				Command: []string{"/bin/sh", "-c"},
+			},
+			expectError: false,
+			expectedCmd: []string{"/bin/sh", "-c"},
+		},
+		{
+			name: "init container with wrong command returns error",
+			container: &corev1.Container{
+				Name:    "init-persistent-home",
+				Image:   "test-image:latest",
+				Command: []string{"/bin/bash", "-c"},
+			},
+			expectError:   true,
+			errorContains: "Invalid init-persistent-home container: command must be exactly [/bin/sh, -c]",
+		},
+		{
+			name: "nil command defaults to [/bin/sh -c] without error",
+			container: &corev1.Container{
+				Name:  "init-persistent-home",
+				Image: "test-image:latest",
+			},
+			expectError: false,
+			expectedCmd: []string{"/bin/sh", "-c"},
+		},
+		{
+			name: "EnsureHomeInitContainerFields sets VolumeMounts to home volume and discards custom mounts",
+			container: &corev1.Container{
+				Name:    "init-persistent-home",
+				Image:   "test-image:latest",
+				Command: []string{"/bin/sh", "-c"},
+				VolumeMounts: []corev1.VolumeMount{
+					{
+						Name:      "custom-volume",
+						MountPath: "/custom/path",
+					},
+					{
+						Name:      "another-volume",
+						MountPath: "/another/path",
+					},
+				},
+			},
+			expectError: false,
+			expectedCmd: []string{"/bin/sh", "-c"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := EnsureHomeInitContainerFields(tt.container)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				assert.EqualError(t, err, tt.errorContains)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.expectedCmd, tt.container.Command, "Command should be set to [/bin/sh, -c]")
+				assert.Len(t, tt.container.VolumeMounts, 1, "VolumeMounts should have exactly one entry")
+				assert.Equal(t, constants.HomeVolumeName, tt.container.VolumeMounts[0].Name, "VolumeMount should be home volume")
+				assert.Equal(t, constants.HomeUserDirectory, tt.container.VolumeMounts[0].MountPath, "VolumeMount should mount to home directory")
+			}
+		})
+	}
+}
+
 func TestInferWorkspaceImage(t *testing.T) {
 	tests := []struct {
 		name          string
