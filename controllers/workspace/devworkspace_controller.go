@@ -403,6 +403,18 @@ func (r *DevWorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	// Inject operator-configured init containers
 	if workspace.Config != nil && workspace.Config.Workspace != nil && len(workspace.Config.Workspace.InitContainers) > 0 {
+		// Validate DWOC init containers: check for empty names and duplicate names
+		seenNames := map[string]bool{}
+		for _, container := range workspace.Config.Workspace.InitContainers {
+			if container.Name == "" {
+				return r.failWorkspace(workspace, "Invalid DWOC configuration: init container has empty name", metrics.ReasonBadRequest, reqLogger, &reconcileStatus), nil
+			}
+			if seenNames[container.Name] {
+				return r.failWorkspace(workspace, fmt.Sprintf("Invalid DWOC configuration: duplicate init container name %q", container.Name), metrics.ReasonBadRequest, reqLogger, &reconcileStatus), nil
+			}
+			seenNames[container.Name] = true
+		}
+
 		// Check if init-persistent-home should be disabled
 		disableHomeInit := pointer.BoolDeref(workspace.Config.Workspace.PersistUserHome.DisableInitContainer, constants.DefaultDisableHomeInitContainer)
 
