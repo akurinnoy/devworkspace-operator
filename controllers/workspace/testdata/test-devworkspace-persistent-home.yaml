@@ -8,7 +8,7 @@ spec:
   routingClass: 'basic'
   template:
     attributes:
-      controller.devfile.io/storage-type: common
+      controller.devfile.io/storage-type: ephemeral
     projects:
       - name: web-nodejs-sample
         git:
