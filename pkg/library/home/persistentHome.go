@@ -17,6 +17,7 @@ package home
 
 import (
 	"fmt"
+	"reflect"
 
 	"github.com/devfile/api/v2/pkg/apis/workspaces/v1alpha2"
 	devfilevalidation "github.com/devfile/api/v2/pkg/validation"
@@ -253,6 +254,8 @@ func EnsureHomeInitContainerFields(c *corev1.Container) error {
 	// Set default command only if not provided
 	if len(c.Command) == 0 {
 		c.Command = []string{"/bin/sh", "-c"}
+	} else if !reflect.DeepEqual(c.Command, []string{"/bin/sh", "-c"}) {
+		return fmt.Errorf("Invalid init-persistent-home container: command must be exactly [/bin/sh, -c]")
 	}
 	c.VolumeMounts = []corev1.VolumeMount{{
 		Name:      constants.HomeVolumeName,
