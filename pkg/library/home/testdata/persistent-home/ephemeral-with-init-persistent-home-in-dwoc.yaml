@@ -1,0 +1,33 @@
+name: "NeedsPersistentHomeDirectory returns true for ephemeral storage when init-persistent-home is configured in DWOC"
+
+input:
+  devworkspaceId: "test-workspaceid"
+  config:
+    workspace:
+      persistUserHome:
+        enabled: true
+        disableInitContainer: true
+      initContainers:
+        - name: init-persistent-home
+          image: testing-image-1
+  workspace:
+    attributes:
+      controller.devfile.io/storage-type: ephemeral
+    components:
+      - name: testing-container-1
+        container:
+          image: testing-image-1
+
+output:
+  workspace:
+    attributes:
+      controller.devfile.io/storage-type: ephemeral
+    components:
+      - name: testing-container-1
+        container:
+          image: testing-image-1
+          volumeMounts:
+            - name: persistent-home
+              path: /home/user/
+      - name: persistent-home
+        volume: {}
