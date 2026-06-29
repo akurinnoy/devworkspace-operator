@@ -346,3 +346,65 @@ func TestInferWorkspaceImage(t *testing.T) {
 		})
 	}
 }
+
+func TestEnsureHomeInitContainerFields(t *testing.T) {
+	tests := []struct {
+		name          string
+		inputCommand  []string
+		inputEnv      []corev1.EnvVar
+		expectError   bool
+		errorContains string
+	}{
+		{
+			name:         "No command set gets default command",
+			inputCommand: nil,
+			inputEnv:     []corev1.EnvVar{{Name: "FOO", Value: "bar"}},
+			expectError:  false,
+		},
+		{
+			name:         "Command exactly [/bin/sh, -c] is kept as-is",
+			inputCommand: []string{"/bin/sh", "-c"},
+			inputEnv:     []corev1.EnvVar{{Name: "MY_VAR", Value: "my_value"}},
+			expectError:  false,
+		},
+		{
+			name:          "Command with different shell returns error",
+			inputCommand:  []string{"/bin/bash"},
+			expectError:   true,
+			errorContains: "command must be exactly [/bin/sh, -c]",
+		},
+		{
+			name:          "Partial match command returns error",
+			inputCommand:  []string{"/bin/sh"},
+			expectError:   true,
+			errorContains: "command must be exactly [/bin/sh, -c]",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			container := &corev1.Container{
+				Command: tt.inputCommand,
+				Env:     tt.inputEnv,
+			}
+
+			err := EnsureHomeInitContainerFields(container)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				assert.ErrorContains(t, err, tt.errorContains)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, []string{"/bin/sh", "-c"}, container.Command)
+				assert.Equal(t, []corev1.VolumeMount{
+					{
+						Name:      constants.HomeVolumeName,
+						MountPath: constants.HomeUserDirectory,
+					},
+				}, container.VolumeMounts)
+				// Verify existing env vars are preserved
+				assert.Equal(t, tt.inputEnv, container.Env)
+			}
+		})
+	}
+}
