@@ -132,6 +132,19 @@ func TestMergeInitContainers(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "new-named patch container is appended after base containers",
+			base: []corev1.Container{
+				{Name: "init-persistent-home", Image: "workspace:latest", Command: []string{"/bin/sh", "-c"}},
+			},
+			patches: []corev1.Container{
+				{Name: "tool-injector", Image: "tool:latest"},
+			},
+			want: []corev1.Container{
+				{Name: "init-persistent-home", Image: "workspace:latest", Command: []string{"/bin/sh", "-c"}},
+				{Name: "tool-injector", Image: "tool:latest"},
+			},
+		},
 	}
 
 	for _, tt := range tests {
