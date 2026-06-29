@@ -1,0 +1,143 @@
+FINDINGS SUMMARY — T1 (Clone, Build, Verify, Map Gaps)
+=======================================================
+Repository: https://github.com/akurinnoy/devworkspace-operator.git
+HEAD SHA: cdc805022785f2630847eb38ceb10dad5a25f6b1
+Worktree: /projects/devworkspace-operator-worktrees/T1
+Branch: task-T1-wave-1 (tracking origin/supervisor/54e4cf33-4920-4e10-b9e8-2320486d3435)
+
+---
+
+1. BUILD AND TEST STATUS
+   - `go mod download`: success (no output)
+   - `go build ./...`: success (no output)
+   - `go test ./pkg/library/home/... ./pkg/library/initcontainers/...`: PASS
+       ok  github.com/devfile/devworkspace-operator/pkg/library/home
+       ok  github.com/devfile/devworkspace-operator/pkg/library/initcontainers
+
+---
+
+2. EnsureHomeInitContainerFields — EXACT LOCATION
+   File: pkg/library/home/persistentHome.go
+   - Comment: lines 250-251
+   - Function signature: line 252  → func EnsureHomeInitContainerFields(c *corev1.Container) error {
+   - Body start: line 253
+   - Body end: line 262
+   - Full body (lines 252-262):
+       func EnsureHomeInitContainerFields(c *corev1.Container) error {
+           // Set default command only if not provided
+           if len(c.Command) == 0 {
+               c.Command = []string{"/bin/sh", "-c"}
+           }
+           c.VolumeMounts = []corev1.VolumeMount{{
+               Name:      constants.HomeVolumeName,
+               MountPath: constants.HomeUserDirectory,
+           }}
+           return nil
+       }
+   - Always returns nil; no error path is currently exercised.
+
+---
+
+3. CONTROLLER CALL SITE — EnsureHomeInitContainerFields
+   File: controllers/workspace/devworkspace_controller.go
+   - Block that injects operator-configured init containers: lines 404-444
+   - Strategic merge call (MergeInitContainers): line 429
+   - failWorkspace on merge error: line 431
+       r.failWorkspace(workspace, fmt.Sprintf("Failed to merge init containers: %s", err), ...)
+   - Loop over merged to find init-persistent-home: lines 435-441
+   - EnsureHomeInitContainerFields call: line 437
+   - failWorkspace on EnsureHomeInitContainerFields error: line 438 (controller lines 437-439)
+       r.failWorkspace(workspace, fmt.Sprintf("Failed to configure %s container: %s", constants.HomeInitComponentName, err), metrics.ReasonBadRequest, reqLogger, &reconcileStatus)
+   - Exact error message format at the call site (line 438):
+       "Failed to configure init-persistent-home container: <err>"
+     (constants.HomeInitComponentName = "init-persistent-home")
+
+---
+
+4. CONTROLLER BLOCK SUMMARY (lines 404-444)
+   Condition guard: `workspace.Config != nil && workspace.Config.Workspace != nil && len(workspace.Config.Workspace.InitContainers) > 0`
+   Filtering logic (lines 410-426):
+     - For container.Name == "init-persistent-home":
+         * Skip if PersistUserHome is disabled
+         * Skip if DisableInitContainer == true
+   Merge: initcontainers.MergeInitContainers (line 429)
+   Post-merge fixup: home.EnsureHomeInitContainerFields (line 437) — only for init-persistent-home
+   Result written back to devfilePodAdditions.InitContainers (line 443)
+
+---
+
+5. EXISTING COMMAND VALIDATION LOGIC
+   - No command validation logic exists anywhere in:
+       pkg/library/home/
+       pkg/library/initcontainers/
+   - EnsureHomeInitContainerFields (line 254) sets a DEFAULT command (`["/bin/sh", "-c"]`)
+     ONLY if `len(c.Command) == 0`. It does NOT validate or reject any command value.
+   - There is NO check that a user-supplied Command is an allowed value.
+   - There is NO allowlist or denylist for container Commands or Args in EnsureHomeInitContainerFields.
+   - addInitContainer (lines 145-186) checks for name/event/command conflicts (initComponentExists,
+     initCommandExists, initEventExists) but these are Devfile-level checks unrelated to
+     Kubernetes container command validation.
+
+---
+
+6. KEY CONSTANTS (pkg/constants/constants.go)
+   - HomeUserDirectory = "/home/user/"         (line 40)
+   - HomeVolumeName = "persistent-home"        (line 42)
+   - HomeInitComponentName = "init-persistent-home" (line 44)
+   - HomeInitEventId = "init-persistent-home"  (line 46)
+   - DefaultDisableHomeInitContainer = false   (line 48)
+
+---
+
+7. KEY TYPES (apis/controller/v1alpha1/devworkspaceoperatorconfig_types.go)
+   - WorkspaceConfig.InitContainers []corev1.Container  (line 266) — operator-level init container list
+   - WorkspaceConfig.PersistUserHome *PersistentHomeConfig (line 193)
+   - PersistentHomeConfig.Enabled *bool (line 293)
+   - PersistentHomeConfig.DisableInitContainer *bool (line 298)
+
+---
+
+8. IMPLEMENTATION GAPS (for T2 and T3)
+
+   a) EnsureHomeInitContainerFields NEVER returns an error.
+      - The function signature returns error, but the body always returns nil.
+      - If T2/T3 want to add command validation (e.g., reject disallowed commands), the error
+        path must be implemented here. Currently any user-supplied command is accepted silently.
+
+   b) No test for EnsureHomeInitContainerFields.
+      - custom_init_test.go and persistentHome_test.go have no test for this function.
+      - T2 should add a test in pkg/library/home/ covering:
+          * container with empty Command → gets default ["/bin/sh", "-c"]
+          * container with non-empty Command → Command is preserved
+          * VolumeMounts are always set to [{Name: "persistent-home", MountPath: "/home/user/"}]
+
+   c) MergeInitContainers is fully tested (merge_test.go, lines 25-144).
+      The "preserve user-configured init-persistent-home content" test (line 98) confirms
+      that user-supplied Image, Args, and Env override defaults while Command is preserved
+      from the base if not in the patch.
+
+   d) Command is set at Devfile level (inferInitContainer, line 238-248):
+      `Command: []string{"/bin/sh", "-c"}` and `Args: []string{initScript}`
+      This is the default init-persistent-home container added to the Devfile TemplateSpec.
+      The Kubernetes-level init container from DWOC config (WorkspaceConfig.InitContainers)
+      is handled separately and merged afterward. These are two separate paths.
+
+   e) No validation that a user-supplied Args value is non-empty or valid.
+      EnsureHomeInitContainerFields does NOT set a default Args value.
+      A user could supply an init-persistent-home container in DWOC config with no Args,
+      which would result in no script being run.
+
+   f) The controller guard at line 405 requires PersistUserHome to be set (not nil)
+      for the DisableInitContainer check at line 407, but there is no nil-guard for
+      workspace.Config.Workspace.PersistUserHome before dereferencing. If PersistUserHome
+      is nil, pointer.BoolDeref will panic. This is a latent nil-dereference risk at line 407.
+
+---
+
+9. VERIFICATION COMMANDS PASSED
+   - git -C /projects/devworkspace-operator-worktrees/T1 rev-parse HEAD
+       → cdc805022785f2630847eb38ceb10dad5a25f6b1
+   - go build ./... → exit 0
+   - go test ./pkg/library/home/... ./pkg/library/initcontainers/... → PASS
+   - grep -c 'EnsureHomeInitContainerFields' findings-summary.txt → ≥1
+   - grep -c 'failWorkspace' findings-summary.txt → ≥1

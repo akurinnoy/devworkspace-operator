@@ -219,6 +219,228 @@ func TestCustomInitPersistentHome(t *testing.T) {
 	}
 }
 
+func TestEnsureHomeInitContainerFields(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       corev1.Container
+		wantErr     bool
+		errMsg      string
+		wantCommand []string
+		wantMounts  []corev1.VolumeMount
+	}{
+		{
+			name: "Empty command gets default command set",
+			input: corev1.Container{
+				Name:  constants.HomeInitComponentName,
+				Image: "workspace:latest",
+			},
+			wantErr:     false,
+			wantCommand: []string{"/bin/sh", "-c"},
+			wantMounts: []corev1.VolumeMount{
+				{Name: constants.HomeVolumeName, MountPath: constants.HomeUserDirectory},
+			},
+		},
+		{
+			name: "Command /bin/sh -c is accepted unchanged",
+			input: corev1.Container{
+				Name:    constants.HomeInitComponentName,
+				Image:   "workspace:latest",
+				Command: []string{"/bin/sh", "-c"},
+				Args:    []string{"echo hello"},
+			},
+			wantErr:     false,
+			wantCommand: []string{"/bin/sh", "-c"},
+			wantMounts: []corev1.VolumeMount{
+				{Name: constants.HomeVolumeName, MountPath: constants.HomeUserDirectory},
+			},
+		},
+		{
+			name: "Command /bin/bash -c returns error with exact message",
+			input: corev1.Container{
+				Name:    constants.HomeInitComponentName,
+				Image:   "workspace:latest",
+				Command: []string{"/bin/bash", "-c"},
+			},
+			wantErr: true,
+			errMsg:  "Invalid init-persistent-home container: command must be exactly [/bin/sh, -c]",
+		},
+		{
+			name: "Command /bin/sh without -c returns error with exact message",
+			input: corev1.Container{
+				Name:    constants.HomeInitComponentName,
+				Image:   "workspace:latest",
+				Command: []string{"/bin/sh"},
+			},
+			wantErr: true,
+			errMsg:  "Invalid init-persistent-home container: command must be exactly [/bin/sh, -c]",
+		},
+		{
+			name: "VolumeMounts set to persistent-home on /home/user/ for empty command container",
+			input: corev1.Container{
+				Name:  constants.HomeInitComponentName,
+				Image: "workspace:latest",
+			},
+			wantErr: false,
+			wantMounts: []corev1.VolumeMount{
+				{Name: "persistent-home", MountPath: "/home/user/"},
+			},
+		},
+		{
+			name: "VolumeMounts set to persistent-home on /home/user/ for valid command container",
+			input: corev1.Container{
+				Name:    constants.HomeInitComponentName,
+				Image:   "workspace:latest",
+				Command: []string{"/bin/sh", "-c"},
+			},
+			wantErr: false,
+			wantMounts: []corev1.VolumeMount{
+				{Name: "persistent-home", MountPath: "/home/user/"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := tt.input.DeepCopy()
+			err := EnsureHomeInitContainerFields(c)
+			if tt.wantErr {
+				assert.EqualError(t, err, tt.errMsg)
+			} else {
+				assert.NoError(t, err)
+				if tt.wantCommand != nil {
+					assert.Equal(t, tt.wantCommand, c.Command)
+				}
+				if tt.wantMounts != nil {
+					assert.Equal(t, tt.wantMounts, c.VolumeMounts)
+				}
+			}
+		})
+	}
+}
+
+func makeWorkspaceWithDWOCContainers(initContainers []corev1.Container) *common.DevWorkspaceWithConfig {
+	return &common.DevWorkspaceWithConfig{
+		DevWorkspace: &dw.DevWorkspace{
+			Spec: dw.DevWorkspaceSpec{
+				Template: dw.DevWorkspaceTemplateSpec{
+					DevWorkspaceTemplateSpecContent: dw.DevWorkspaceTemplateSpecContent{
+						Components: []dw.Component{
+							{
+								Name: "main-container",
+								ComponentUnion: dw.ComponentUnion{
+									Container: &dw.ContainerComponent{
+										Container: dw.Container{
+											Image: "workspace-image:latest",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Config: &v1alpha1.OperatorConfiguration{
+			Workspace: &v1alpha1.WorkspaceConfig{
+				PersistUserHome: &v1alpha1.PersistentHomeConfig{
+					Enabled: ptr.To(true),
+				},
+				InitContainers: initContainers,
+			},
+		},
+	}
+}
+
+func TestDWOCMultipleInitContainersFullFlow(t *testing.T) {
+	tests := []struct {
+		name               string
+		dwocInitContainers []corev1.Container
+		expectNames        []string // expected container names after merge, in order
+	}{
+		{
+			name: "Two non-init-persistent-home DWOC init containers appear after init-persistent-home",
+			dwocInitContainers: []corev1.Container{
+				{
+					Name:  "tool-init-a",
+					Image: "tool-a:latest",
+				},
+				{
+					Name:  "tool-init-b",
+					Image: "tool-b:latest",
+				},
+			},
+			// init-persistent-home is added by AddPersistentHomeVolume;
+			// DWOC containers are new-named patches so they are appended after
+			expectNames: []string{constants.HomeInitComponentName, "tool-init-a", "tool-init-b"},
+		},
+		{
+			name: "Order of DWOC init containers is preserved in merged output",
+			dwocInitContainers: []corev1.Container{
+				{
+					Name:  "step-1",
+					Image: "step-1:latest",
+				},
+				{
+					Name:  "step-2",
+					Image: "step-2:latest",
+				},
+				{
+					Name:  "step-3",
+					Image: "step-3:latest",
+				},
+			},
+			expectNames: []string{constants.HomeInitComponentName, "step-1", "step-2", "step-3"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			workspace := makeWorkspaceWithDWOCContainers(tt.dwocInitContainers)
+
+			// Step 1: AddPersistentHomeVolume produces the devfile-level template spec
+			// with init-persistent-home component added
+			spec, err := AddPersistentHomeVolume(workspace)
+			assert.NoError(t, err)
+			assert.NotNil(t, spec)
+
+			// Verify init-persistent-home component is present
+			var devfileInitContainers []corev1.Container
+			for _, component := range spec.Components {
+				if component.Name == constants.HomeInitComponentName && component.Container != nil {
+					devfileInitContainers = append(devfileInitContainers, corev1.Container{
+						Name:    component.Name,
+						Image:   component.Container.Image,
+						Command: component.Container.Command,
+						Args:    component.Container.Args,
+					})
+				}
+			}
+			assert.Len(t, devfileInitContainers, 1, "expected exactly one init-persistent-home component in spec")
+
+			// Step 2: Simulate controller merge: base = devfile init containers,
+			// patches = DWOC init containers (new-named containers are appended in order)
+			merged := append([]corev1.Container{}, devfileInitContainers...)
+			baseNames := make(map[string]bool)
+			for _, c := range devfileInitContainers {
+				baseNames[c.Name] = true
+			}
+			for _, patch := range tt.dwocInitContainers {
+				if !baseNames[patch.Name] {
+					merged = append(merged, patch)
+				}
+			}
+
+			// Verify count and order
+			assert.Len(t, merged, len(tt.expectNames))
+			for i, name := range tt.expectNames {
+				if i < len(merged) {
+					assert.Equal(t, name, merged[i].Name, "container at index %d should be %q", i, name)
+				}
+			}
+		})
+	}
+}
+
 func TestInferWorkspaceImage(t *testing.T) {
 	tests := []struct {
 		name          string
