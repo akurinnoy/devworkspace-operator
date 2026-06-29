@@ -1633,4 +1633,154 @@ var _ = Describe("DevWorkspace Controller", func() {
 		})
 	})
 
+	Context("DWOC init containers", func() {
+		const testURL = "test-url"
+
+		BeforeEach(func() {
+			workspacecontroller.SetupHttpClientsForTesting(&http.Client{
+				Transport: &testutil.TestRoundTripper{
+					Data: map[string]testutil.TestResponse{
+						fmt.Sprintf("%s/healthz", testURL): {
+							StatusCode: http.StatusOK,
+						},
+					},
+				},
+			})
+		})
+
+		AfterEach(func() {
+			deleteDevWorkspace(devWorkspaceName)
+			workspacecontroller.SetupHttpClientsForTesting(getBasicTestHttpClient())
+		})
+
+		It("Basic custom init container is injected into the deployment", func() {
+			By("Configuring DWOC with a custom init container")
+			config.SetGlobalConfigForTesting(&controllerv1alpha1.OperatorConfiguration{
+				Workspace: &controllerv1alpha1.WorkspaceConfig{
+					InitContainers: []corev1.Container{
+						{
+							Name:    "custom-init",
+							Image:   "quay.io/test/custom-init:latest",
+							Command: []string{"/bin/sh", "-c", "echo hello"},
+						},
+					},
+				},
+			})
+			defer config.SetGlobalConfigForTesting(nil)
+
+			createDevWorkspace(devWorkspaceName, "test-devworkspace-custom-init.yaml")
+			devworkspace := getExistingDevWorkspace(devWorkspaceName)
+			workspaceID := devworkspace.Status.DevWorkspaceId
+
+			By("Manually making Routing ready to continue")
+			markRoutingReady(testURL, common.DevWorkspaceRoutingName(workspaceID))
+
+			deploy := &appsv1.Deployment{}
+			deployNN := namespacedName(common.DeploymentName(workspaceID), testNamespace)
+			Eventually(func() error {
+				return k8sClient.Get(ctx, deployNN, deploy)
+			}, timeout, interval).Should(Succeed(), "Getting workspace deployment from cluster")
+
+			By("Checking custom init container is present")
+			found := false
+			for _, ic := range deploy.Spec.Template.Spec.InitContainers {
+				if ic.Name == "custom-init" {
+					found = true
+					break
+				}
+			}
+			Expect(found).Should(BeTrue(), "Expected custom-init container in deployment init containers")
+		})
+
+		It("Custom init-persistent-home overrides default when persistent home is enabled", func() {
+			By("Configuring DWOC with init-persistent-home and persistent home enabled")
+			enabled := true
+			config.SetGlobalConfigForTesting(&controllerv1alpha1.OperatorConfiguration{
+				Workspace: &controllerv1alpha1.WorkspaceConfig{
+					PersistUserHome: &controllerv1alpha1.PersistentHomeConfig{
+						Enabled: &enabled,
+					},
+					InitContainers: []corev1.Container{
+						{
+							Name:    "init-persistent-home",
+							Image:   "quay.io/test/home-init:latest",
+							Command: []string{"/bin/sh", "-c"},
+						},
+					},
+				},
+			})
+			defer config.SetGlobalConfigForTesting(nil)
+
+			createDevWorkspace(devWorkspaceName, "test-devworkspace-custom-init.yaml")
+			devworkspace := getExistingDevWorkspace(devWorkspaceName)
+			workspaceID := devworkspace.Status.DevWorkspaceId
+
+			By("Manually making Routing ready to continue")
+			markRoutingReady(testURL, common.DevWorkspaceRoutingName(workspaceID))
+
+			deploy := &appsv1.Deployment{}
+			deployNN := namespacedName(common.DeploymentName(workspaceID), testNamespace)
+			Eventually(func() error {
+				return k8sClient.Get(ctx, deployNN, deploy)
+			}, timeout, interval).Should(Succeed(), "Getting workspace deployment from cluster")
+
+			By("Checking init-persistent-home container is present with correct name and volume mount")
+			var homeInit *corev1.Container
+			for i := range deploy.Spec.Template.Spec.InitContainers {
+				if deploy.Spec.Template.Spec.InitContainers[i].Name == "init-persistent-home" {
+					homeInit = &deploy.Spec.Template.Spec.InitContainers[i]
+					break
+				}
+			}
+			Expect(homeInit).ShouldNot(BeNil(), "Expected init-persistent-home container in deployment")
+			Expect(homeInit.Name).Should(Equal("init-persistent-home"))
+			hasHomeMount := false
+			for _, vm := range homeInit.VolumeMounts {
+				if vm.Name == "persistent-home" {
+					hasHomeMount = true
+					break
+				}
+			}
+			Expect(hasHomeMount).Should(BeTrue(), "Expected persistent-home volume mount on init-persistent-home container")
+		})
+
+		It("init-persistent-home from DWOC is skipped when persistent home is disabled", func() {
+			By("Configuring DWOC with init-persistent-home but persistent home disabled")
+			disabled := false
+			config.SetGlobalConfigForTesting(&controllerv1alpha1.OperatorConfiguration{
+				Workspace: &controllerv1alpha1.WorkspaceConfig{
+					PersistUserHome: &controllerv1alpha1.PersistentHomeConfig{
+						Enabled: &disabled,
+					},
+					InitContainers: []corev1.Container{
+						{
+							Name:    "init-persistent-home",
+							Image:   "quay.io/test/home-init:latest",
+							Command: []string{"/bin/sh", "-c"},
+						},
+					},
+				},
+			})
+			defer config.SetGlobalConfigForTesting(nil)
+
+			createDevWorkspace(devWorkspaceName, "test-devworkspace-custom-init.yaml")
+			devworkspace := getExistingDevWorkspace(devWorkspaceName)
+			workspaceID := devworkspace.Status.DevWorkspaceId
+
+			By("Manually making Routing ready to continue")
+			markRoutingReady(testURL, common.DevWorkspaceRoutingName(workspaceID))
+
+			deploy := &appsv1.Deployment{}
+			deployNN := namespacedName(common.DeploymentName(workspaceID), testNamespace)
+			Eventually(func() error {
+				return k8sClient.Get(ctx, deployNN, deploy)
+			}, timeout, interval).Should(Succeed(), "Getting workspace deployment from cluster")
+
+			By("Checking init-persistent-home container is NOT present")
+			for _, ic := range deploy.Spec.Template.Spec.InitContainers {
+				Expect(ic.Name).ShouldNot(Equal("init-persistent-home"), "init-persistent-home should not be injected when persistent home is disabled")
+			}
+		})
+	})
+
 })
