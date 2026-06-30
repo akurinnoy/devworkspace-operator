@@ -17,6 +17,7 @@ package home
 
 import (
 	"fmt"
+	"reflect"
 
 	"github.com/devfile/api/v2/pkg/apis/workspaces/v1alpha2"
 	devfilevalidation "github.com/devfile/api/v2/pkg/validation"
@@ -250,8 +251,12 @@ func inferInitContainer(dwTemplateSpec *v1alpha2.DevWorkspaceTemplateSpec) *v1al
 // EnsureHomeInitContainerFields ensures that an init-persistent-home container has
 // the correct Command and VolumeMounts.
 func EnsureHomeInitContainerFields(c *corev1.Container) error {
-	// Set default command only if not provided
-	if len(c.Command) == 0 {
+	// Validate or set default command
+	if len(c.Command) > 0 {
+		if !reflect.DeepEqual(c.Command, []string{"/bin/sh", "-c"}) {
+			return fmt.Errorf("command must be exactly [/bin/sh, -c]")
+		}
+	} else {
 		c.Command = []string{"/bin/sh", "-c"}
 	}
 	c.VolumeMounts = []corev1.VolumeMount{{
