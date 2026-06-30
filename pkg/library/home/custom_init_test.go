@@ -219,6 +219,65 @@ func TestCustomInitPersistentHome(t *testing.T) {
 	}
 }
 
+func TestEnsureHomeInitContainerFields(t *testing.T) {
+	tests := []struct {
+		name          string
+		inputCommand  []string
+		expectError   bool
+		errorContains string
+	}{
+		{
+			name:         "NoCommand: sets default command and VolumeMounts, returns nil",
+			inputCommand: nil,
+			expectError:  false,
+		},
+		{
+			name:         "ValidCommand: exact [/bin/sh, -c] accepted, sets VolumeMounts, returns nil",
+			inputCommand: []string{"/bin/sh", "-c"},
+			expectError:  false,
+		},
+		{
+			name:          "InvalidCommand: wrong binary /usr/bin/bash returns error",
+			inputCommand:  []string{"/usr/bin/bash", "-c"},
+			expectError:   true,
+			errorContains: "command must be exactly [/bin/sh, -c]",
+		},
+		{
+			name:          "InvalidCommand: missing -c argument [/bin/sh] returns error",
+			inputCommand:  []string{"/bin/sh"},
+			expectError:   true,
+			errorContains: "command must be exactly [/bin/sh, -c]",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			container := &corev1.Container{
+				Name:    "init-persistent-home",
+				Command: tt.inputCommand,
+			}
+
+			err := EnsureHomeInitContainerFields(container)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				if tt.errorContains != "" {
+					assert.Contains(t, err.Error(), tt.errorContains)
+				}
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, []string{"/bin/sh", "-c"}, container.Command)
+				assert.Equal(t, []corev1.VolumeMount{
+					{
+						Name:      constants.HomeVolumeName,
+						MountPath: constants.HomeUserDirectory,
+					},
+				}, container.VolumeMounts)
+			}
+		})
+	}
+}
+
 func TestInferWorkspaceImage(t *testing.T) {
 	tests := []struct {
 		name          string
