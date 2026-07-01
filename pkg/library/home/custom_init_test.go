@@ -28,6 +28,121 @@ import (
 	"k8s.io/utils/ptr"
 )
 
+func TestEnsureHomeInitContainerFields(t *testing.T) {
+	baseWorkspace := &common.DevWorkspaceWithConfig{
+		DevWorkspace: &dw.DevWorkspace{
+			Spec: dw.DevWorkspaceSpec{
+				Template: dw.DevWorkspaceTemplateSpec{
+					DevWorkspaceTemplateSpecContent: dw.DevWorkspaceTemplateSpecContent{
+						Components: []dw.Component{
+							{
+								Name: "main-container",
+								ComponentUnion: dw.ComponentUnion{
+									Container: &dw.ContainerComponent{
+										Container: dw.Container{
+											Image: "test-image:latest",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Config: &v1alpha1.OperatorConfiguration{
+			Workspace: &v1alpha1.WorkspaceConfig{
+				PersistUserHome: &v1alpha1.PersistentHomeConfig{
+					Enabled: ptr.To(true),
+				},
+			},
+		},
+	}
+
+	tests := []struct {
+		name            string
+		inputCommand    []string
+		expectError     bool
+		expectedCommand []string
+	}{
+		{
+			name:            "no command — succeeds, command becomes [/bin/sh, -c]",
+			inputCommand:    nil,
+			expectError:     false,
+			expectedCommand: []string{"/bin/sh", "-c"},
+		},
+		{
+			name:            "command [/bin/sh, -c] explicitly — succeeds",
+			inputCommand:    []string{"/bin/sh", "-c"},
+			expectError:     false,
+			expectedCommand: []string{"/bin/sh", "-c"},
+		},
+		{
+			name:         "command [/bin/bash, -c] — validation error",
+			inputCommand: []string{"/bin/bash", "-c"},
+			expectError:  true,
+		},
+		{
+			name:         "command [/bin/sh] missing -c — validation error",
+			inputCommand: []string{"/bin/sh"},
+			expectError:  true,
+		},
+		{
+			name:         "command [/bin/sh, -c, extra] too many — validation error",
+			inputCommand: []string{"/bin/sh", "-c", "extra"},
+			expectError:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			container := &corev1.Container{
+				Name:    constants.HomeInitComponentName,
+				Image:   "test-image:latest",
+				Command: tt.inputCommand,
+				VolumeMounts: []corev1.VolumeMount{
+					{
+						Name:      "existing-volume",
+						MountPath: "/existing",
+					},
+				},
+			}
+
+			err := EnsureHomeInitContainerFields(container, baseWorkspace)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), "Invalid init-persistent-home container")
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.expectedCommand, container.Command)
+				// VolumeMounts must always be overwritten
+				assert.Len(t, container.VolumeMounts, 1)
+				assert.Equal(t, constants.HomeVolumeName, container.VolumeMounts[0].Name)
+				assert.Equal(t, constants.HomeUserDirectory, container.VolumeMounts[0].MountPath)
+			}
+		})
+	}
+
+	t.Run("VolumeMounts are always overwritten even with valid command", func(t *testing.T) {
+		container := &corev1.Container{
+			Name:    constants.HomeInitComponentName,
+			Image:   "test-image:latest",
+			Command: []string{"/bin/sh", "-c"},
+			VolumeMounts: []corev1.VolumeMount{
+				{Name: "vol1", MountPath: "/mnt/vol1"},
+				{Name: "vol2", MountPath: "/mnt/vol2"},
+			},
+		}
+
+		err := EnsureHomeInitContainerFields(container, baseWorkspace)
+		assert.NoError(t, err)
+		assert.Len(t, container.VolumeMounts, 1, "VolumeMounts should be overwritten to only contain persistent-home")
+		assert.Equal(t, constants.HomeVolumeName, container.VolumeMounts[0].Name)
+		assert.Equal(t, constants.HomeUserDirectory, container.VolumeMounts[0].MountPath)
+	})
+}
+
 func TestCustomInitPersistentHome(t *testing.T) {
 	tests := []struct {
 		name                    string
