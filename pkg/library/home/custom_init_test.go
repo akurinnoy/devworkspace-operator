@@ -346,3 +346,68 @@ func TestInferWorkspaceImage(t *testing.T) {
 		})
 	}
 }
+
+// TestEnsureHomeInitContainerFields tests the EnsureHomeInitContainerFields function.
+// Note: No YAML fixture is created in testdata/persistent-home/ for this function because
+// EnsureHomeInitContainerFields is NOT on the AddPersistentHomeVolume call path — it is called
+// later in the controller after MergeInitContainers. The YAML-driven tests in persistentHome_test.go
+// exercise NeedsPersistentHomeDirectory + AddPersistentHomeVolume and would never invoke this
+// validation logic. Creating an error-type fixture would cause TestPersistentHomeVolume to assert
+// an error from AddPersistentHomeVolume that is never returned, breaking existing tests.
+func TestEnsureHomeInitContainerFields(t *testing.T) {
+	tests := []struct {
+		name          string
+		inputCommand  []string
+		expectErr     bool
+		errContains   string
+		expectCommand []string
+	}{
+		{
+			name:          "Empty command sets default [/bin/sh, -c], no error",
+			inputCommand:  []string{},
+			expectErr:     false,
+			expectCommand: []string{"/bin/sh", "-c"},
+		},
+		{
+			name:          "Valid command [/bin/sh, -c] explicitly provided, no change",
+			inputCommand:  []string{"/bin/sh", "-c"},
+			expectErr:     false,
+			expectCommand: []string{"/bin/sh", "-c"},
+		},
+		{
+			name:         "Invalid command [/bin/bash, -c] returns error",
+			inputCommand: []string{"/bin/bash", "-c"},
+			expectErr:    true,
+			errContains:  "Invalid init-persistent-home container: command must be exactly [/bin/sh, -c]",
+		},
+		{
+			name:         "Invalid command with single element [/bin/sh] returns error",
+			inputCommand: []string{"/bin/sh"},
+			expectErr:    true,
+			errContains:  "Invalid init-persistent-home container: command must be exactly [/bin/sh, -c]",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			container := &corev1.Container{
+				Name:    constants.HomeInitComponentName,
+				Command: tt.inputCommand,
+			}
+
+			err := EnsureHomeInitContainerFields(container)
+
+			if tt.expectErr {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.expectCommand, container.Command)
+				// VolumeMounts are always set to persistent-home -> /home/user/ for non-error cases
+				assert.Len(t, container.VolumeMounts, 1)
+				assert.Equal(t, constants.HomeVolumeName, container.VolumeMounts[0].Name)
+				assert.Equal(t, constants.HomeUserDirectory, container.VolumeMounts[0].MountPath)
+			}
+		})
+	}
+}
