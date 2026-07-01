@@ -461,3 +461,86 @@ func TestInferWorkspaceImage(t *testing.T) {
 		})
 	}
 }
+
+func TestEnsureHomeInitContainerFieldsImageInheritance(t *testing.T) {
+	workspaceImage := "workspace-image:latest"
+
+	makeWorkspace := func(image string) *common.DevWorkspaceWithConfig {
+		return &common.DevWorkspaceWithConfig{
+			DevWorkspace: &dw.DevWorkspace{
+				Spec: dw.DevWorkspaceSpec{
+					Template: dw.DevWorkspaceTemplateSpec{
+						DevWorkspaceTemplateSpecContent: dw.DevWorkspaceTemplateSpecContent{
+							Components: []dw.Component{
+								{
+									Name: "main-container",
+									ComponentUnion: dw.ComponentUnion{
+										Container: &dw.ContainerComponent{
+											Container: dw.Container{
+												Image: image,
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			Config: &v1alpha1.OperatorConfiguration{
+				Workspace: &v1alpha1.WorkspaceConfig{
+					PersistUserHome: &v1alpha1.PersistentHomeConfig{
+						Enabled: ptr.To(true),
+					},
+				},
+			},
+		}
+	}
+
+	t.Run("init-persistent-home container with no image inherits workspace image", func(t *testing.T) {
+		workspace := makeWorkspace(workspaceImage)
+		container := &corev1.Container{
+			Name:    constants.HomeInitComponentName,
+			Image:   "",
+			Command: []string{"/bin/sh", "-c"},
+		}
+
+		err := EnsureHomeInitContainerFields(container, workspace)
+		assert.NoError(t, err)
+		// Image should be inferred from the workspace's primary container
+		inferredImage := InferWorkspaceImage(&workspace.Spec.Template)
+		assert.Equal(t, inferredImage, container.Image, "empty image should be replaced with inferred workspace image")
+		assert.Equal(t, workspaceImage, container.Image)
+	})
+
+	t.Run("init-persistent-home container with image already set preserves it", func(t *testing.T) {
+		workspace := makeWorkspace(workspaceImage)
+		customImage := "custom-init-image:v1"
+		container := &corev1.Container{
+			Name:    constants.HomeInitComponentName,
+			Image:   customImage,
+			Command: []string{"/bin/sh", "-c"},
+		}
+
+		err := EnsureHomeInitContainerFields(container, workspace)
+		assert.NoError(t, err)
+		// Pre-set image must not be overwritten
+		assert.Equal(t, customImage, container.Image, "non-empty image should be preserved as-is")
+	})
+
+	t.Run("non-init-persistent-home custom container image is not touched", func(t *testing.T) {
+		workspace := makeWorkspace(workspaceImage)
+		originalImage := "other-init:latest"
+		// EnsureHomeInitContainerFields does not filter by container name.
+		// When the container already has an image, it must be preserved regardless of name.
+		container := &corev1.Container{
+			Name:    "other-custom-init",
+			Image:   originalImage,
+			Command: []string{"/bin/sh", "-c"},
+		}
+
+		err := EnsureHomeInitContainerFields(container, workspace)
+		assert.NoError(t, err)
+		assert.Equal(t, originalImage, container.Image, "image of a non-init-persistent-home container should not be changed")
+	})
+}
