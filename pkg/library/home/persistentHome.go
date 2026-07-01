@@ -253,18 +253,26 @@ func isValidInitPersistentHomeCommand(cmd []string) bool {
 }
 
 // EnsureHomeInitContainerFields ensures that an init-persistent-home container has
-// the correct Command and VolumeMounts. If Command is empty, it defaults to [/bin/sh, -c].
+// the correct Command, Args, and VolumeMounts. If Command is empty, it defaults to [/bin/sh, -c].
 // Returns an error if Command is set to something other than [/bin/sh, -c].
+// Args is always overwritten with the initScript to prevent operator config from silently
+// replacing the init payload.
 // VolumeMounts is always overwritten with the persistent-home mount.
-func EnsureHomeInitContainerFields(c *corev1.Container) error {
+// If the container's Image is empty, it is inferred from the workspace's primary container image.
+// A non-empty Image is preserved as-is.
+func EnsureHomeInitContainerFields(c *corev1.Container, workspace *common.DevWorkspaceWithConfig) error {
 	if len(c.Command) == 0 {
 		c.Command = []string{"/bin/sh", "-c"}
 	} else if !isValidInitPersistentHomeCommand(c.Command) {
 		return fmt.Errorf("Invalid init-persistent-home container: command must be exactly [/bin/sh, -c]")
 	}
+	c.Args = []string{initScript}
 	c.VolumeMounts = []corev1.VolumeMount{{
 		Name:      constants.HomeVolumeName,
 		MountPath: constants.HomeUserDirectory,
 	}}
+	if c.Image == "" {
+		c.Image = InferWorkspaceImage(&workspace.Spec.Template)
+	}
 	return nil
 }
