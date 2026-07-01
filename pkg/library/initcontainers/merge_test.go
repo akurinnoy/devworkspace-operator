@@ -132,6 +132,114 @@ func TestMergeInitContainers(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "DWOC custom container appended after init-persistent-home",
+			base: []corev1.Container{
+				{
+					Name:  "init-persistent-home",
+					Image: "workspace-image:latest",
+					Args:  []string{"default stow script"},
+				},
+			},
+			patches: []corev1.Container{
+				{
+					Name:  "custom-setup",
+					Image: "custom-image:latest",
+					Args:  []string{"echo 'custom setup'"},
+				},
+			},
+			want: []corev1.Container{
+				{
+					Name:  "init-persistent-home",
+					Image: "workspace-image:latest",
+					Args:  []string{"default stow script"},
+				},
+				{
+					Name:  "custom-setup",
+					Image: "custom-image:latest",
+					Args:  []string{"echo 'custom setup'"},
+				},
+			},
+		},
+		{
+			name: "multiple DWOC custom containers appended in order after init-persistent-home",
+			base: []corev1.Container{
+				{
+					Name:  "init-persistent-home",
+					Image: "workspace-image:latest",
+					Args:  []string{"default stow script"},
+				},
+			},
+			patches: []corev1.Container{
+				{
+					Name:  "custom-setup",
+					Image: "custom-image:latest",
+					Args:  []string{"echo 'custom setup'"},
+				},
+				{
+					Name:  "another-setup",
+					Image: "another-image:latest",
+					Args:  []string{"echo 'another setup'"},
+				},
+			},
+			want: []corev1.Container{
+				{
+					Name:  "init-persistent-home",
+					Image: "workspace-image:latest",
+					Args:  []string{"default stow script"},
+				},
+				{
+					Name:  "custom-setup",
+					Image: "custom-image:latest",
+					Args:  []string{"echo 'custom setup'"},
+				},
+				{
+					Name:  "another-setup",
+					Image: "another-image:latest",
+					Args:  []string{"echo 'another setup'"},
+				},
+			},
+		},
+		{
+			name: "DWOC container matching devfile-level container is merged not duplicated",
+			base: []corev1.Container{
+				{
+					Name:    "init-persistent-home",
+					Image:   "workspace-image:latest",
+					Command: []string{"/bin/sh", "-c"},
+					Args:    []string{"default stow script"},
+				},
+				{
+					Name:    "devfile-init",
+					Image:   "devfile-image:latest",
+					Command: []string{"/bin/sh", "-c"},
+					Args:    []string{"echo 'devfile init'"},
+					Env:     []corev1.EnvVar{{Name: "DEVFILE_VAR", Value: "devfile-value"}},
+				},
+			},
+			patches: []corev1.Container{
+				{
+					Name:  "devfile-init",
+					Image: "patched-image:latest",
+					Args:  []string{"echo 'patched devfile init'"},
+				},
+			},
+			want: []corev1.Container{
+				{
+					Name:    "init-persistent-home",
+					Image:   "workspace-image:latest",
+					Command: []string{"/bin/sh", "-c"},
+					Args:    []string{"default stow script"},
+				},
+				{
+					Name:    "devfile-init",
+					Image:   "patched-image:latest",
+					Command: []string{"/bin/sh", "-c"},
+					Args:    []string{"echo 'patched devfile init'"},
+					Env:     []corev1.EnvVar{{Name: "DEVFILE_VAR", Value: "devfile-value"}},
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
