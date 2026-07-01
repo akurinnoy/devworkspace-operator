@@ -30,10 +30,9 @@ import (
 
 func TestCustomInitPersistentHome(t *testing.T) {
 	tests := []struct {
-		name                    string
-		workspace               *common.DevWorkspaceWithConfig
-		expectDefaultInitAdded  bool
-		expectCustomInitSkipped bool
+		name                   string
+		workspace              *common.DevWorkspaceWithConfig
+		expectDefaultInitAdded bool
 	}{
 		{
 			name: "Adds default init when custom init-persistent-home is provided",
@@ -215,6 +214,116 @@ func TestCustomInitPersistentHome(t *testing.T) {
 				}
 			}
 			assert.True(t, hasPersistentHomeVolume, "persistent-home volume should always be added")
+		})
+	}
+}
+
+// TestNeedsPersistentHomeDirectoryEphemeral covers the ephemeral storage branch introduced in T1.
+// When the workspace storage type is "ephemeral", NeedsPersistentHomeDirectory only returns true
+// if an init-persistent-home container is explicitly configured in the DWOC — this ensures
+// consistent behaviour between ephemeral and non-ephemeral workspaces for custom init setups.
+func TestNeedsPersistentHomeDirectoryEphemeral(t *testing.T) {
+	baseComponents := []dw.Component{
+		{
+			Name: "main",
+			ComponentUnion: dw.ComponentUnion{
+				Container: &dw.ContainerComponent{
+					Container: dw.Container{Image: "test:latest"},
+				},
+			},
+		},
+	}
+
+	tests := []struct {
+		name        string
+		workspace   *common.DevWorkspaceWithConfig
+		expectNeeds bool
+	}{
+		{
+			name: "Ephemeral workspace without custom init-persistent-home returns false",
+			workspace: &common.DevWorkspaceWithConfig{
+				DevWorkspace: &dw.DevWorkspace{
+					Spec: dw.DevWorkspaceSpec{
+						Template: dw.DevWorkspaceTemplateSpec{
+							DevWorkspaceTemplateSpecContent: dw.DevWorkspaceTemplateSpecContent{
+								Attributes: attributes.Attributes{}.
+									PutString(constants.DevWorkspaceStorageTypeAttribute, constants.EphemeralStorageClassType),
+								Components: baseComponents,
+							},
+						},
+					},
+				},
+				Config: &v1alpha1.OperatorConfiguration{
+					Workspace: &v1alpha1.WorkspaceConfig{
+						PersistUserHome: &v1alpha1.PersistentHomeConfig{
+							Enabled: ptr.To(true),
+						},
+						// No InitContainers with HomeInitComponentName
+						InitContainers: []corev1.Container{
+							{Name: "some-other-init", Image: "other:latest"},
+						},
+					},
+				},
+			},
+			expectNeeds: false,
+		},
+		{
+			name: "Ephemeral workspace with custom init-persistent-home in DWOC returns true",
+			workspace: &common.DevWorkspaceWithConfig{
+				DevWorkspace: &dw.DevWorkspace{
+					Spec: dw.DevWorkspaceSpec{
+						Template: dw.DevWorkspaceTemplateSpec{
+							DevWorkspaceTemplateSpecContent: dw.DevWorkspaceTemplateSpecContent{
+								Attributes: attributes.Attributes{}.
+									PutString(constants.DevWorkspaceStorageTypeAttribute, constants.EphemeralStorageClassType),
+								Components: baseComponents,
+							},
+						},
+					},
+				},
+				Config: &v1alpha1.OperatorConfiguration{
+					Workspace: &v1alpha1.WorkspaceConfig{
+						PersistUserHome: &v1alpha1.PersistentHomeConfig{
+							Enabled: ptr.To(true),
+						},
+						InitContainers: []corev1.Container{
+							{Name: constants.HomeInitComponentName, Image: "custom:latest"},
+						},
+					},
+				},
+			},
+			expectNeeds: true,
+		},
+		{
+			name: "Non-ephemeral workspace returns true regardless of custom init config",
+			workspace: &common.DevWorkspaceWithConfig{
+				DevWorkspace: &dw.DevWorkspace{
+					Spec: dw.DevWorkspaceSpec{
+						Template: dw.DevWorkspaceTemplateSpec{
+							DevWorkspaceTemplateSpecContent: dw.DevWorkspaceTemplateSpecContent{
+								Components: baseComponents,
+							},
+						},
+					},
+				},
+				Config: &v1alpha1.OperatorConfiguration{
+					Workspace: &v1alpha1.WorkspaceConfig{
+						PersistUserHome: &v1alpha1.PersistentHomeConfig{
+							Enabled: ptr.To(true),
+						},
+						// No custom init-persistent-home, but non-ephemeral should still need it
+					},
+				},
+			},
+			expectNeeds: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := NeedsPersistentHomeDirectory(tt.workspace)
+			assert.Equal(t, tt.expectNeeds, result,
+				"NeedsPersistentHomeDirectory returned unexpected value")
 		})
 	}
 }
