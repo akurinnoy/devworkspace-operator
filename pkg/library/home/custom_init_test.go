@@ -23,7 +23,9 @@ import (
 	"github.com/devfile/devworkspace-operator/apis/controller/v1alpha1"
 	"github.com/devfile/devworkspace-operator/pkg/common"
 	"github.com/devfile/devworkspace-operator/pkg/constants"
+	"github.com/devfile/devworkspace-operator/pkg/library/initcontainers"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/utils/ptr"
 )
@@ -345,4 +347,220 @@ func TestInferWorkspaceImage(t *testing.T) {
 			assert.Equal(t, tt.expectedImage, result)
 		})
 	}
+}
+
+func TestEnsureHomeInitContainerFields(t *testing.T) {
+	tests := []struct {
+		name          string
+		container     corev1.Container
+		expectError   bool
+		expectErrMsg  string
+		expectCommand []string
+		checkMounts   func(t *testing.T, mounts []corev1.VolumeMount)
+	}{
+		{
+			name: "valid command [/bin/sh, -c] — no error, volumeMount added",
+			container: corev1.Container{
+				Name:    constants.HomeInitComponentName,
+				Command: []string{"/bin/sh", "-c"},
+			},
+			expectError:   false,
+			expectCommand: []string{"/bin/sh", "-c"},
+			checkMounts: func(t *testing.T, mounts []corev1.VolumeMount) {
+				found := false
+				for _, m := range mounts {
+					if m.Name == constants.HomeVolumeName {
+						found = true
+						assert.Equal(t, constants.HomeUserDirectory, m.MountPath)
+					}
+				}
+				assert.True(t, found, "expected persistent-home VolumeMount to be present")
+			},
+		},
+		{
+			name: "invalid command [/bin/bash, -c] — returns error",
+			container: corev1.Container{
+				Name:    constants.HomeInitComponentName,
+				Command: []string{"/bin/bash", "-c"},
+			},
+			expectError:  true,
+			expectErrMsg: "Invalid init-persistent-home container: command must be exactly [/bin/sh, -c]",
+		},
+		{
+			name: "empty command — command set to [/bin/sh, -c], volumeMount added",
+			container: corev1.Container{
+				Name:    constants.HomeInitComponentName,
+				Command: []string{},
+			},
+			expectError:   false,
+			expectCommand: []string{"/bin/sh", "-c"},
+			checkMounts: func(t *testing.T, mounts []corev1.VolumeMount) {
+				found := false
+				for _, m := range mounts {
+					if m.Name == constants.HomeVolumeName {
+						found = true
+						assert.Equal(t, constants.HomeUserDirectory, m.MountPath)
+					}
+				}
+				assert.True(t, found, "expected persistent-home VolumeMount to be present")
+			},
+		},
+		{
+			name: "container already has persistent-home VolumeMount AND additional VolumeMount — no duplicate, additional preserved",
+			container: corev1.Container{
+				Name:    constants.HomeInitComponentName,
+				Command: []string{"/bin/sh", "-c"},
+				VolumeMounts: []corev1.VolumeMount{
+					{
+						Name:      constants.HomeVolumeName,
+						MountPath: constants.HomeUserDirectory,
+					},
+					{
+						Name:      "my-secret",
+						MountPath: "/etc/secret",
+					},
+				},
+			},
+			expectError:   false,
+			expectCommand: []string{"/bin/sh", "-c"},
+			checkMounts: func(t *testing.T, mounts []corev1.VolumeMount) {
+				persistentHomeCount := 0
+				mySecretFound := false
+				for _, m := range mounts {
+					if m.Name == constants.HomeVolumeName {
+						persistentHomeCount++
+					}
+					if m.Name == "my-secret" {
+						mySecretFound = true
+						assert.Equal(t, "/etc/secret", m.MountPath, "my-secret mountPath should be preserved")
+					}
+				}
+				assert.Equal(t, 1, persistentHomeCount, "persistent-home VolumeMount should appear exactly once (no duplicate)")
+				assert.True(t, mySecretFound, "additional VolumeMount 'my-secret' must still be present after EnsureHomeInitContainerFields")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := tt.container.DeepCopy()
+			err := EnsureHomeInitContainerFields(c)
+
+			if tt.expectError {
+				require.Error(t, err)
+				assert.Equal(t, tt.expectErrMsg, err.Error())
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectCommand, c.Command, "command should be set to [/bin/sh, -c]")
+			if tt.checkMounts != nil {
+				tt.checkMounts(t, c.VolumeMounts)
+			}
+		})
+	}
+}
+
+func TestDWOCMultipleInitContainersFullFlow(t *testing.T) {
+	// Build a DevWorkspaceWithConfig that has:
+	//   1. An init-persistent-home override container (with valid command)
+	//   2. An additional custom init container
+	workspace := &common.DevWorkspaceWithConfig{
+		DevWorkspace: &dw.DevWorkspace{
+			Spec: dw.DevWorkspaceSpec{
+				Template: dw.DevWorkspaceTemplateSpec{
+					DevWorkspaceTemplateSpecContent: dw.DevWorkspaceTemplateSpecContent{
+						Components: []dw.Component{
+							{
+								Name: "workspace-container",
+								ComponentUnion: dw.ComponentUnion{
+									Container: &dw.ContainerComponent{
+										Container: dw.Container{
+											Image: "workspace-image:latest",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Config: &v1alpha1.OperatorConfiguration{
+			Workspace: &v1alpha1.WorkspaceConfig{
+				PersistUserHome: &v1alpha1.PersistentHomeConfig{
+					Enabled: ptr.To(true),
+				},
+				InitContainers: []corev1.Container{
+					{
+						Name:    constants.HomeInitComponentName,
+						Image:   "custom-init-image:latest",
+						Command: []string{"/bin/sh", "-c"},
+						Args:    []string{"echo 'custom persistent home init'"},
+					},
+					{
+						Name:  "extra-init",
+						Image: "extra-init-image:latest",
+						Args:  []string{"echo 'extra init'"},
+					},
+				},
+			},
+		},
+	}
+
+	// Base init containers as they would be generated by the operator for the home init
+	baseContainers := []corev1.Container{
+		{
+			Name:    constants.HomeInitComponentName,
+			Image:   "workspace-image:latest",
+			Command: []string{"/bin/sh", "-c"},
+			Args:    []string{initScript},
+		},
+	}
+
+	// DWOC init containers (overrides + extras)
+	dwocContainers := workspace.Config.Workspace.InitContainers
+
+	// Step 1: Merge DWOC init containers into the base
+	merged, err := initcontainers.MergeInitContainers(baseContainers, dwocContainers)
+	require.NoError(t, err, "MergeInitContainers should not return an error")
+
+	// Step 2: Apply EnsureHomeInitContainerFields to all init containers
+	for i := range merged {
+		if merged[i].Name == constants.HomeInitComponentName {
+			err := EnsureHomeInitContainerFields(&merged[i])
+			require.NoError(t, err, "EnsureHomeInitContainerFields should not return an error for valid container")
+		}
+	}
+
+	// Verify the resulting slice has correct order:
+	// init-persistent-home should be first (it was in the base), extra-init should follow
+	require.Len(t, merged, 2, "merged slice should have exactly 2 init containers")
+
+	assert.Equal(t, constants.HomeInitComponentName, merged[0].Name,
+		"first container should be init-persistent-home")
+	assert.Equal(t, "extra-init", merged[1].Name,
+		"second container should be extra-init (custom container preserved)")
+
+	// Verify that init-persistent-home has the persistent-home VolumeMount
+	homeContainer := merged[0]
+	assert.Equal(t, []string{"/bin/sh", "-c"}, homeContainer.Command,
+		"init-persistent-home command should be [/bin/sh, -c]")
+
+	persistentHomeMountFound := false
+	for _, vm := range homeContainer.VolumeMounts {
+		if vm.Name == constants.HomeVolumeName {
+			persistentHomeMountFound = true
+			assert.Equal(t, constants.HomeUserDirectory, vm.MountPath,
+				"persistent-home VolumeMount should be mounted at home user directory")
+		}
+	}
+	assert.True(t, persistentHomeMountFound,
+		"init-persistent-home container should have persistent-home VolumeMount after EnsureHomeInitContainerFields")
+
+	// Verify custom container is preserved
+	assert.Equal(t, "extra-init", merged[1].Name,
+		"custom extra-init container should be preserved in merged slice")
+	assert.Equal(t, "extra-init-image:latest", merged[1].Image,
+		"custom extra-init container image should be preserved")
 }
