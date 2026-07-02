@@ -247,16 +247,31 @@ func inferInitContainer(dwTemplateSpec *v1alpha2.DevWorkspaceTemplateSpec) *v1al
 	return nil
 }
 
+// isValidInitPersistentHomeCommand returns true only when cmd equals ["/bin/sh", "-c"].
+func isValidInitPersistentHomeCommand(cmd []string) bool {
+	return len(cmd) == 2 && cmd[0] == "/bin/sh" && cmd[1] == "-c"
+}
+
 // EnsureHomeInitContainerFields ensures that an init-persistent-home container has
 // the correct Command and VolumeMounts.
 func EnsureHomeInitContainerFields(c *corev1.Container) error {
-	// Set default command only if not provided
-	if len(c.Command) == 0 {
+	if len(c.Command) != 0 {
+		if !isValidInitPersistentHomeCommand(c.Command) {
+			return fmt.Errorf("Invalid init-persistent-home container: command must be exactly [/bin/sh, -c]")
+		}
+	} else {
 		c.Command = []string{"/bin/sh", "-c"}
 	}
-	c.VolumeMounts = []corev1.VolumeMount{{
+
+	// Append the persistent-home VolumeMount only when absent.
+	for _, vm := range c.VolumeMounts {
+		if vm.Name == constants.HomeVolumeName {
+			return nil
+		}
+	}
+	c.VolumeMounts = append(c.VolumeMounts, corev1.VolumeMount{
 		Name:      constants.HomeVolumeName,
 		MountPath: constants.HomeUserDirectory,
-	}}
+	})
 	return nil
 }
