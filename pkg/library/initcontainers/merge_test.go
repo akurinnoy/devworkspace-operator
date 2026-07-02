@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -28,6 +29,7 @@ func TestMergeInitContainers(t *testing.T) {
 		base    []corev1.Container
 		patches []corev1.Container
 		want    []corev1.Container
+		wantErr bool
 	}{
 		{
 			name: "empty base",
@@ -132,12 +134,84 @@ func TestMergeInitContainers(t *testing.T) {
 				},
 			},
 		},
+		{
+			name:    "nil base returns patches as result",
+			base:    nil,
+			patches: []corev1.Container{
+				{Name: "patch-container", Image: "patch-image"},
+				{Name: "second-patch", Image: "second-patch-image"},
+			},
+			want: []corev1.Container{
+				{Name: "patch-container", Image: "patch-image"},
+				{Name: "second-patch", Image: "second-patch-image"},
+			},
+		},
+		{
+			name: "patch overrides image while preserving args",
+			base: []corev1.Container{
+				{
+					Name:  "init-container",
+					Image: "old-image:v1",
+					Args:  []string{"--flag=original"},
+				},
+			},
+			patches: []corev1.Container{
+				{
+					Name:  "init-container",
+					Image: "new-image:v2",
+				},
+			},
+			want: []corev1.Container{
+				{
+					Name:  "init-container",
+					Image: "new-image:v2",
+					Args:  []string{"--flag=original"},
+				},
+			},
+		},
+		{
+			name: "new-named patch containers appended after all base containers in patch order",
+			base: []corev1.Container{
+				{Name: "base-A", Image: "image-A"},
+				{Name: "base-B", Image: "image-B"},
+			},
+			patches: []corev1.Container{
+				{Name: "new-X", Image: "image-X"},
+				{Name: "new-Y", Image: "image-Y"},
+			},
+			want: []corev1.Container{
+				{Name: "base-A", Image: "image-A"},
+				{Name: "base-B", Image: "image-B"},
+				{Name: "new-X", Image: "image-X"},
+				{Name: "new-Y", Image: "image-Y"},
+			},
+		},
+		{
+			name: "mixed: base [A,B], patches [B-override,C] produces [A,B-merged,C]",
+			base: []corev1.Container{
+				{Name: "A", Image: "image-A", Args: []string{"arg-A"}},
+				{Name: "B", Image: "image-B", Args: []string{"arg-B"}},
+			},
+			patches: []corev1.Container{
+				{Name: "B", Image: "image-B-updated"},
+				{Name: "C", Image: "image-C"},
+			},
+			want: []corev1.Container{
+				{Name: "A", Image: "image-A", Args: []string{"arg-A"}},
+				{Name: "B", Image: "image-B-updated", Args: []string{"arg-B"}},
+				{Name: "C", Image: "image-C"},
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := MergeInitContainers(tt.base, tt.patches)
-			assert.NoError(t, err, "should not return error")
+			if tt.wantErr {
+				require.Error(t, err, "should return error")
+				return
+			}
+			require.NoError(t, err, "should not return error")
 			assert.Equal(t, tt.want, got, "should return merged containers")
 		})
 	}
