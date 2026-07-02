@@ -404,7 +404,10 @@ func (r *DevWorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// Inject operator-configured init containers
 	if workspace.Config != nil && workspace.Config.Workspace != nil && len(workspace.Config.Workspace.InitContainers) > 0 {
 		// Check if init-persistent-home should be disabled
-		disableHomeInit := pointer.BoolDeref(workspace.Config.Workspace.PersistUserHome.DisableInitContainer, constants.DefaultDisableHomeInitContainer)
+		disableHomeInit := constants.DefaultDisableHomeInitContainer
+		if workspace.Config.Workspace.PersistUserHome != nil {
+			disableHomeInit = pointer.BoolDeref(workspace.Config.Workspace.PersistUserHome.DisableInitContainer, constants.DefaultDisableHomeInitContainer)
+		}
 
 		// Filter init containers from config based on workspace settings
 		patches := []corev1.Container{}
